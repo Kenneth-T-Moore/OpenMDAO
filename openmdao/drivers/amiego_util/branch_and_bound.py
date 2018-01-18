@@ -29,7 +29,7 @@ from scipy.special import erf
 from pyDOE import lhs
 
 from openmdao.core.driver import Driver
-from openmdao.drivers.amiego_util.genetic_algorithm import GeneticAlgorithm
+from openmdao.drivers.genetic_algorithm_driver import GeneticAlgorithm
 from openmdao.drivers.amiego_util.optimize_function import snopt_opt
 from openmdao.utils.concurrent import concurrent_eval, concurrent_eval_lb
 from openmdao.utils.general_utils import set_pyoptsparse_opt
@@ -604,7 +604,7 @@ class Branch_and_Bound(Driver):
             Matrix Ain_hat for linear model of constraints.
         bin_hat : ndarray
             Vector bin_hat for linear model of constraints.
-        surrogate : <KrigingSurrogate>
+        surrogate : <AMIEGOKrigingSurrogate>
             Surrogate model of optimized objective with respect to integer design variables.
 
         Return
@@ -840,7 +840,7 @@ class Branch_and_Bound(Driver):
             Matrix Ain_hat for linear model of constraints.
         bin_hat : ndarray
             Vector bin_hat for linear model of constraints.
-        surrogate : <KrigingSurrogate>
+        surrogate : <AMIEGOKrigingSurrogate>
             Surrogate model of optimized objective with respect to integer design variables.
 
         Return
@@ -999,7 +999,7 @@ class Branch_and_Bound(Driver):
         # print('con deriv', sens_dict['con']['x'])
         return sens_dict, fail
 
-    def obj_for_GA(self, x):
+    def obj_for_GA(self, x, icase):
         """
         Evalute main problem objective at the requested point.
 
@@ -1009,6 +1009,8 @@ class Branch_and_Bound(Driver):
         ----------
         x : ndarray
             Value of design variables.
+        icase : int
+            Case number, used for identification when run in parallel.
 
         Returns
         -------
@@ -1016,6 +1018,8 @@ class Branch_and_Bound(Driver):
             Objective value
         bool
             Success flag, True if successful
+        int
+            Case number, used for identification when run in parallel.
         """
         surrogate = self.obj_surrogate
         xU_iter = self.xU_iter
@@ -1024,7 +1028,7 @@ class Branch_and_Bound(Driver):
         P = 0.0
         rp = 100.0
 
-        g = x/xU_iter - 1.0
+        g = x / xU_iter - 1.0
         idx = np.where(g > 0.0)
         if len(idx) > 0:
             P = np.einsum('i->', g[idx]**2)
@@ -1033,7 +1037,7 @@ class Branch_and_Bound(Driver):
 
         NegEI = calc_conEI_norm(xval, surrogate)
         f = NegEI + rp * P
-        return f, True
+        return f, True, icase
 
 
 def update_active_set(active_set, ubd):
@@ -1073,7 +1077,7 @@ def gen_coeff_bound(xI_lb, xI_ub, surrogate):
         Lower bound of the integer design variables.
     ub_x : ndarray
         Upper bound of the integer design variables.
-    surrogate : <KrigingSurrogate>
+    surrogate : <AMIEGOKrigingSurrogate>
         Surrogate model of optimized objective with respect to integer design variables.
 
     Returns
@@ -1122,7 +1126,7 @@ def interval_analysis(lb_x, ub_x, surrogate):
         Lower bound of the integer design variables.
     ub_x : ndarray
         Upper bound of the integer design variables.
-    surrogate : <KrigingSurrogate>
+    surrogate : <AMIEGOKrigingSurrogate>
         Surrogate model of optimized objective with respect to integer design variables.
 
     Returns
@@ -1181,7 +1185,7 @@ def lin_underestimator(lb, ub, surrogate):
         Lower bound vector.
     ub : ndarray
         Upper bound vector
-    surrogate : <KrigingSurrogate>
+    surrogate : <AMIEGOKrigingSurrogate>
         Surrogate model of optimized objective with respect to integer design variables.
 
     Returns
@@ -1273,7 +1277,7 @@ def calc_conEI_norm(xval, obj_surrogate, SSqr=None, y_hat=None):
     ----------
     xval : ndarray
         Value of the current integer design variables.
-    obj_surrogate : <KrigingSurrogate>
+    obj_surrogate : <AMIEGOKrigingSurrogate>
         Surrogate model of optimized objective with respect to integer design variables.
     SSqr : float
         Pre-calculated value for sigma squared from successful maximize S.
@@ -1299,7 +1303,7 @@ def calc_conEI_norm(xval, obj_surrogate, SSqr=None, y_hat=None):
         n = np.shape(X)[0]
         one = np.ones((n, ))
 
-        r = np.exp(-np.einsum("ij->i", thetas.T * (xval - X)**p ))
+        r = np.exp(-np.einsum("ij->i", thetas.T * (xval - X)**p))
 
         y_hat = mu + np.dot(r, c_r)
         term0 = np.dot(R_inv, r)
@@ -1389,7 +1393,11 @@ class NodeHistclass():
     """
     Data object for keeping track of statistics of each branch and bound node.
     """
+
     def __init__(self):
+        """
+        Initialize this bookkeeping class.
+        """
         self.ubd_track = np.array([1])
         self.ubdloc_best = np.inf
         self.priority_flag = 0

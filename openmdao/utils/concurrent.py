@@ -200,7 +200,6 @@ def concurrent_eval(func, cases, comm, allgather=False):
     object
         Return from function.
     """
-
     results = []
 
     if comm is None:

@@ -14,8 +14,9 @@ import tempfile
 import numpy as np
 
 from six import StringIO, PY3
-from six.moves import cStringIO as cStringIO
+from six.moves import range, cStringIO as cStringIO
 
+from sphinx.errors import SphinxError
 from redbaron import RedBaron
 
 sqlite_file = 'feature_docs_unit_test_db.sqlite'    # name of the sqlite database file
@@ -121,7 +122,7 @@ def replace_asserts_with_prints(source_code):
     rb = RedBaron(source_code)  # convert to RedBaron internal structure
 
     for assert_type in ['assertAlmostEqual', 'assertLess', 'assertGreater', 'assertEqual',
-                        'assertEqualArrays', 'assertTrue', 'assertFalse']:
+                        'assert_equal_arrays', 'assertTrue', 'assertFalse']:
         assert_nodes = rb.findAll("NameNode", value=assert_type)
         for assert_node in assert_nodes:
             assert_node = assert_node.parent
@@ -323,7 +324,7 @@ def is_output_node(node):
     output_functions = [
         'setup', 'run_model', 'run_driver',
         'check_partials', 'check_totals',
-        'list_inputs', 'list_outputs', 'list_residuals'
+        'list_inputs', 'list_outputs',
     ]
 
     if node.type == 'atomtrailers' and len(node.value) in (3, 4):
@@ -575,7 +576,7 @@ def strip_header(src):
     return '\n'.join(new_lines[counter:])
 
 
-def get_test_src(method_path):
+def get_and_run_test(method_path):
     """
     Return desired source code for a single feature after testing it.
 
@@ -587,7 +588,7 @@ def get_test_src(method_path):
     4. Run the test using source_with_out_start_stop_indicators -> run_outputs
     5. Split method_source up into groups of "In" blocks -> input_blocks
     6. Extract from run_outputs, the Out blocks -> output_blocks
-    7. Return method_source, input_blocks, output_blocks, skipped, failed
+    7. Return method_source, input_blocks, output_blocks, skipped
 
     Parameters
     ----------
@@ -606,8 +607,6 @@ def get_test_src(method_path):
         List of Python output blocks
     bool
         True if test was skipped
-    bool
-        True if test failed
     """
 
     #----------------------------------------------------------
@@ -761,7 +760,12 @@ def get_test_src(method_path):
     if PY3 and not use_mpi and not isinstance(run_outputs, str):
         run_outputs = "".join(map(chr, run_outputs))  # in Python 3, run_outputs is of type bytes!
 
-    if not skipped and not failed:
+    if skipped:
+        input_blocks = output_blocks = None
+        skipped_output = run_outputs
+    elif failed:
+        raise SphinxError(run_outputs)
+    else:
         #####################
         ### 5. Split method_source up into groups of "In" blocks -> input_blocks ###
         #####################
@@ -781,9 +785,6 @@ def get_test_src(method_path):
         # Merge an input block with the previous block and throw away the output block
         input_blocks, output_blocks = clean_up_empty_output_blocks(input_blocks, output_blocks)
 
-        skipped_failed_output = None
-    else:
-        input_blocks = output_blocks = None
-        skipped_failed_output = run_outputs
+        skipped_output = None
 
-    return method_source, skipped_failed_output, input_blocks, output_blocks, skipped, failed
+    return method_source, skipped_output, input_blocks, output_blocks, skipped

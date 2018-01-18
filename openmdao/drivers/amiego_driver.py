@@ -23,7 +23,7 @@ import numpy as np
 
 from openmdao.core.driver import Driver
 from openmdao.drivers.amiego_util.branch_and_bound import Branch_and_Bound
-from openmdao.drivers.amiego_util.kriging import KrigingSurrogate
+from openmdao.drivers.amiego_util.kriging import AMIEGOKrigingSurrogate
 from openmdao.drivers.scipy_optimizer import ScipyOptimizer
 from openmdao.recorders.recording_iteration_stack import Recording
 
@@ -37,7 +37,8 @@ class AMIEGO_driver(Driver):
     mixed-integer/discrete type design variables in a computationally
     efficient manner and finds a near-global solution to the above
     MINLP/MDNLP problem. The continuous optimization is handled by the
-    optimizer slotted in self.cont_opt.
+    optimizer slotted in self.cont_opt, which is ScipyOptimizer by
+    default.
 
     AMIEGO_driver supports the following:
         integer_design_vars
@@ -47,14 +48,41 @@ class AMIEGO_driver(Driver):
     options['ei_tol_rel'] :  0.001
         Relative tolerance on the expected improvement.
     options['max_infill_points'] : 10
-        Ratio of maximum number of additional points to number of initial
+        Maximum number of additional points per design variable.
         points.
     options['r_penalty'] : 1.0
         Constraint penalty applied to objective for surrogate model.
+
+    Attributes
+    ----------
+    c_dvs : list
+        Cache of continuous design variable names.
+    con_sampling : dict(list)
+        Optional constraint values from user-supplied pre-optimized initial samples.
+    cont_opt : <Driver>
+        Slot for continuous optimizer.
+    i_idx : dict
+        Cache of local sizes for each design variable.
+    i_size : int
+        Number of integer design variables.
+    minlp : <Branch_and_Bound>
+        Slot for Branch and Bound subdriver.
+    n_train : int
+        Number of training points for surrogate.
+    obj_sampling : dict(list)
+        Optional objective values from user-supplied pre-optimized initial samples.
+    sampling : dict(list)
+        Initial sampling points.
+    sampling_eflag : dict(list)
+        Optional success flag from user-supplied pre-optimized initial samples.
+    surrogate : <AMIEGOKrigingSurrogate>
+        Surrogate model to use to model objective as a function of the integer design vars.
     """
 
     def __init__(self):
-        """Initialize the AMIEGO driver."""
+        """
+        Initialize the AMIEGO driver.
+        """
         super(AMIEGO_driver, self).__init__()
 
         # What we support
@@ -73,10 +101,9 @@ class AMIEGO_driver(Driver):
                     desc='Set to False to prevent printing of iteration messages.')
         opt.declare('ei_tol_rel', 0.001, lower=0.0,
                     desc='Relative tolerance on the expected improvement.')
-        opt.declare('max_infill_points', 10, lower=1.0,
-                    desc='Ratio of maximum number of additional points to number of initial '
-                    'points.')
-        opt.declare('r_penalty', 1.0,
+        opt.declare('max_infill_points', 10, lower=1,
+                    desc='Maximum number of additional points per design variable.')
+        opt.declare('r_penalty', 2.0,
                     desc='Constraint penalty applied to objective.')
 
         # The default continuous optimizer. User can slot a different one
@@ -88,7 +115,7 @@ class AMIEGO_driver(Driver):
 
         # Default surrogate. User can slot a modified one, but it essentially
         # has to provide what Kriging provides.
-        self.surrogate = KrigingSurrogate
+        self.surrogate = AMIEGOKrigingSurrogate
 
         self.c_dvs = []
         self.i_size = 0
@@ -101,7 +128,6 @@ class AMIEGO_driver(Driver):
 
         # User can pre-load these to skip initial continuous optimization
         # in favor of pre-optimized points.
-        # NOTE: when running in this mode, everything comes in as lists.
         self.obj_sampling = None
         self.con_sampling = None
         self.sampling_eflag = None
@@ -395,6 +421,19 @@ class AMIEGO_driver(Driver):
             obj_surr = obj[:] * scale_fac_conopt
 
             num_vio = np.zeros((n, 1), dtype=np.int)
+
+            # Normalize the objective data
+            X_mean = np.mean(x_i, axis=0)
+            X_std = np.std(x_i, axis=0)
+            X_std[X_std == 0.] = 1.
+
+            Y_mean = np.mean(obj_surr, axis=0)
+            Y_std = np.std(obj_surr, axis=0)
+            Y_std[Y_std == 0.] = 1.
+
+            X = (x_i - X_mean) / X_std
+            Y = (obj_surr - Y_mean) / Y_std
+
             for name, val in iteritems(cons):
                 val = np.array(val)
 
@@ -405,26 +444,42 @@ class AMIEGO_driver(Driver):
                 val_u = val - meta['upper']
                 val_l = meta['lower'] - val
 
-                # Newly added to make the problem appear unconstrained to Amiego
+                # Normalize the constraint data
+                g_mean = np.mean(val, axis=0)
+                g_std = np.std(val, axis=0)
+                g_std[g_std == 0.] = 1.0
+                g_norm = (val - g_mean)/g_std
+                g_vio_ub = val_u/g_std
+                g_vio_lb = val_l/g_std
+
+                # Make the problem appear unconstrained to Amiego
                 M = val.shape[1]
                 for ii in range(n):
                     for mm in range(M):
+
                         if val_u[ii][mm] > 0:
-                            P[ii] += (val_u[ii][mm])**2
+                            P[ii] += g_vio_ub[ii][mm]**2
                             num_vio[ii] += 1
+
                         elif val_l[ii][mm] > 0:
-                            P[ii] += (val_l[ii][mm])**2
+                            P[ii] += g_vio_lb[ii][mm]**2
                             num_vio[ii] += 1
 
             for ii in range(n):
                 if num_vio[ii] > 0:
-                    obj_surr[ii] = obj_surr[ii] / (1.0 + r_pen * P[ii] / num_vio[ii])
+                    #obj_surr[ii] = obj_surr[ii] / (1.0 + r_pen * P[ii] / num_vio[ii])
+                    Y[ii] += (r_pen * P[ii] / num_vio[ii])
 
             obj_surrogate = self.surrogate()
             obj_surrogate.use_snopt = True
-            obj_surrogate.train(x_i, obj_surr, KPLS=True)
 
-            obj_surrogate.y = obj_surr
+            #obj_surrogate.train(x_i, obj_surr, KPLS=True)
+            #obj_surrogate.y = obj_surr
+
+            obj_surrogate.X, obj_surrogate.X_mean, obj_surrogate.X_std = X, X_mean, X_std
+            obj_surrogate.Y, obj_surrogate.Y_mean, obj_surrogate.Y_std = Y, Y_mean, Y_std
+            obj_surrogate.train(X, Y, KPLS=True, norm_data=True)
+
             best_obj_norm = (best_obj - obj_surrogate.Y_mean) / obj_surrogate.Y_std
 
             if disp:
@@ -518,7 +573,10 @@ class AMIEGO_driver(Driver):
         for name, val in iteritems(best_cont_design):
             self.set_design_var(name, val)
 
-        problem.model._solve_nonlinear()
+        with Recording('AMIEGO_cont_opt', i_con_opt, self) as rec:
+            problem.model._solve_nonlinear()
+            rec.abs = 0.0
+            rec.rel = 0.0
 
         if disp:
             print("\n===================Result Summary====================")
@@ -527,6 +585,8 @@ class AMIEGO_driver(Driver):
             print("Best Integer designs: ", best_int_design)
             print("Corresponding continuous designs: ", best_cont_design)
             print("=====================================================")
+
+        return True
 
     def pre_cont_opt_hook(self):
         """

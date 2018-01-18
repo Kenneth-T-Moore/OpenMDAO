@@ -9,7 +9,7 @@ import numpy as np
 from openmdao.core.group import get_relevant_vars
 from openmdao.api import Problem, Group, IndepVarComp, PETScVector, NonlinearBlockGS, ScipyOptimizer, \
      ExecComp, Group, NewtonSolver, ImplicitComponent, ScipyKrylov
-from openmdao.devtools.testutil import assert_rel_error
+from openmdao.utils.assert_utils import assert_rel_error
 
 from openmdao.test_suite.components.paraboloid import Paraboloid
 from openmdao.test_suite.components.sellar import SellarDerivatives, SellarDerivativesConnected
@@ -961,13 +961,13 @@ class TestProblem(unittest.TestCase):
             model.add_subsystem('p1', IndepVarComp('x', 3.0))
             model.add_subsystem('p2', IndepVarComp('y', -4.0))
             model.add_subsystem('comp', ExecComp("f_xy=2.0*x+3.0*y"))
-    
+
             model.connect('p1.x', 'comp.x')
             model.connect('p2.y', 'comp.y')
-    
+
             prob.setup()
             prob.run_model()
-    
+
             assert_rel_error(self, prob['p2.y'], 5.0)
             assert_rel_error(self, prob['comp.f_xy'], 21.0)
         finally:

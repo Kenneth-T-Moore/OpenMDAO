@@ -55,7 +55,6 @@ def snopt_opt(objfun, desvar, lb, ub, ncon=None, title=None, options=None,
     int
         Return (error) code from SNOPT.
     """
-
     if OPTIMIZER:
         from pyoptsparse import Optimization
     else:

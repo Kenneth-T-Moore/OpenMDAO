@@ -23,6 +23,7 @@ for mod_name in MOCK_MODULES:
 # start off running the monkeypatch to keep options/parameters
 # usable in docstring for autodoc.
 
+
 def __init__(self, docstring, config={}):
     """
     init
@@ -90,11 +91,12 @@ extensions = [
     'sphinx.ext.mathjax',
     'sphinx.ext.viewcode',
     'numpydoc',
-    'show_unittest_examples',
     'embed_code',
     'embed_options',
     'embed_test',
     'embed_compare',
+    'embed_shell_cmd',
+    'embed_bibtex',
     'tags'
 ]
 
@@ -192,7 +194,7 @@ htmlhelp_basename = 'OpenMDAOdoc'
 
 #Customize sidebar
 html_sidebars = {
-   '**': ['globaltoc.html']
+   '**': ['globaltoc.html', 'searchbox.html']
 }
 # -- Options for manual page output ---------------------------------------
 

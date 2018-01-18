@@ -1,20 +1,25 @@
 .. _instbasedtrace:
 
 ***************************
-Instance-based Call Tracing
+Instance-Based Call Tracing
 ***************************
 
-The `openmdao trace` command can be used to print a trace of each instance method call.  For example:
+The :code:`openmdao trace` command can be used to print a trace of each instance method call.  For example:
 
 .. code-block:: none
 
    openmdao trace <your_python_script_here>
 
 
-Whenever a method is called that matches the search criteria, the pathname of the object instance, if
-available, and its class and an instance ID, along with the method name, will be written to the
-console, indented based on its location in the call stack. For example:
+Whenever a method is called that matches the search criteria, the following will be written to the console,
+indented based on its location in the call stack. :
 
+    #. Pathname of the object instance (if available)
+    #. Class
+    #. Instance ID
+    #. Method name
+
+    For example:
 
 .. code-block:: none
 
@@ -144,10 +149,5 @@ setup related functions, do the following:
 To see a list of the available pre-defined sets of functions to trace, look at the usage info
 for the `-g` command that can be obtained as follows:
 
-
-.. code-block:: none
-
-   openmdao trace -h
-
-
-The `-h` command line option will display descriptions of all of the available command line options.
+.. embed-shell-cmd::
+    :cmd: openmdao trace -h
