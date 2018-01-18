@@ -375,6 +375,7 @@ class pyOptSparseDriver(Driver):
             0 for successful function evaluation
             1 for unsuccessful function evaluation
         """
+        print('obj dv', dv_dict)
         model = self._problem.model
         fail = 0
 
@@ -414,7 +415,7 @@ class pyOptSparseDriver(Driver):
             fail = 1
             func_dict = {}
 
-        # print("Functions calculated")
+        print("Functions calculated")
         # print(dv_dict)
 
         return func_dict, fail
@@ -443,6 +444,7 @@ class pyOptSparseDriver(Driver):
             0 for successful function evaluation
             1 for unsuccessful function evaluation
         """
+        print('adj dv', dv_dict)
         prob = self._problem
         fail = 0
 
@@ -478,7 +480,7 @@ class pyOptSparseDriver(Driver):
             print(70 * "=", tb, 70 * "=")
             sens_dict = {}
 
-        # print("Derivatives calculated")
+        print("Derivatives calculated")
         # print(dv_dict)
         # print(sens_dict)
         return sens_dict, fail
