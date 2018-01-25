@@ -86,9 +86,9 @@ class Branch_and_Bound(Driver):
                     desc='Absolute tolerance for sub-optimizations.')
         opt.declare('maxiter', 100000, lower=0.0,
                     desc='Maximum number of iterations.')
-        opt.declare('trace_iter', 3,
+        opt.declare('trace_iter', 5,
                     desc='Number of generations to trace back for ubd.')
-        opt.declare('trace_iter_max', 5,
+        opt.declare('trace_iter_max', 10,
                     desc='Maximum number of generations to trace back for ubd.')
         opt.declare('maxiter_ubd', 10000,
                     desc='Number of generations ubd stays the same')

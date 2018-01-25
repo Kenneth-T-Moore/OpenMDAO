@@ -50,6 +50,8 @@ class TestAMIEGOdriver(unittest.TestCase):
 
         prob.driver.cont_opt = pyOptSparseDriver()
         prob.driver.cont_opt.options['optimizer'] = 'SNOPT'
+        prob.driver.minlp.options['trace_iter'] = 3
+        prob.driver.minlp.options['trace_iter_max'] = 5
 
         prob.driver.sampling = {'p2.xI' : np.array([[-5.0], [0.0], [5.0]])}
 
@@ -78,6 +80,9 @@ class TestAMIEGOdriver(unittest.TestCase):
         #model.approx_totals()
         prob.driver.cont_opt = pyOptSparseDriver()
         prob.driver.cont_opt.options['optimizer'] = 'SNOPT'
+
+        prob.driver.minlp.options['trace_iter'] = 3
+        prob.driver.minlp.options['trace_iter_max'] = 5
 
         model.add_design_var('area1', lower=0.0005, upper=10.0)
         model.add_design_var('area2', lower=0.0005, upper=10.0)
@@ -121,6 +126,9 @@ class TestAMIEGOdriver(unittest.TestCase):
         #prob.driver.options['disp'] = False
         prob.driver.cont_opt = pyOptSparseDriver()
         prob.driver.cont_opt.options['optimizer'] = 'SNOPT'
+
+        prob.driver.minlp.options['trace_iter'] = 3
+        prob.driver.minlp.options['trace_iter_max'] = 5
 
         model.add_design_var('area', lower=0.0005, upper=10.0)
         model.add_design_var('mat', lower=1, upper=4)
