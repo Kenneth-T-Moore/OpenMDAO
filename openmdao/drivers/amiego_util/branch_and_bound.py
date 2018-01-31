@@ -51,6 +51,21 @@ class Branch_and_Bound(Driver):
     their paper on EGO,1998. This enables the algorithm to use any
     gradient-based approach to obtain a global solution. Also, to satisfy the
     integer constraints, a new branching scheme has been implemented.
+
+    Attributes
+    ----------
+    dvs : list
+        Cache of integer design variable names.
+    eflag_MINLPBB : bool
+        This is set to True when we find a local minimum.
+    fopt : ndarray
+        Objective value at optimal design.
+    i_idx : dict
+        Cache of local sizes for each design variable.
+    obj_surrogate : <AMIEGOKrigingSurrogate>
+        Surrogate model of the objective as a function of the integer design vars.
+    xopt : ndarray
+        Optimal design.
     """
 
     def __init__(self):
@@ -100,15 +115,12 @@ class Branch_and_Bound(Driver):
         self.idx_cache = {}
         self.obj_surrogate = None
 
-        # Amiego will set this to True if we have found a minimum.
+        # We will set this to True if we have found a minimum.
         self.eflag_MINLPBB = False
 
         # Amiego retrieves optimal design and optimum upon completion.
         self.xopt = None
         self.fopt = None
-
-        # Declare stuff we need to pass to objective callback functions
-        self.current_surr = None
 
         # Experimental Options. TODO: could go into Options
         self.load_balance = True
@@ -202,7 +214,7 @@ class Branch_and_Bound(Driver):
         # Active set fields: (Updated!)
         #     Aset = [[NodeNumber, lb, ub, LBD, UBD, nodeHist], [], ..]
         active_set = []
-        nodeHist = NodeHistclass()
+        nodeHist = NodeHist()
         UBD_term = UBD
 
         comm = problem.model.comm
@@ -333,12 +345,50 @@ class Branch_and_Bound(Driver):
         self.xopt = xopt
         self.fopt = fopt
 
+        return False
+
     def evaluate_node(self, xL_iter, xU_iter, par_node, LBD_prev, LBD, UBD, fopt, xopt, node_num,
                       nodeHist, ubd_count):
         """
         Perform Branch and Bound step on a single node.
 
         This function encapsulates the portion of the code that runs in parallel.
+
+        Parameters
+        ----------
+        xL_iter : ndarray
+            Lower bound of design variables.
+        xU_iter : ndarray
+            Upper bound of design variables.
+        par_node : int
+            Index of parent node for this child node.
+        LBD_prev : float
+            Previous iteration value of LBD.
+        LBD : float
+            Current value of lower bound estimate.
+        UBD : float
+            Current value of upper bound esimate.
+        fopt : float
+            Current best objective value
+        xopt : ndarray
+            Current best design values.
+        node_num : int
+            Index of this current node
+        nodeHist : <NodeHist>
+            Data structure containing information about this node.
+        ubd_count : int
+            Counter for number of generations.
+
+        Returns
+        -------
+        float
+            New upper bound estimate.
+        float
+            New best objective value.
+        ndaray
+            New design variables.
+        list
+            List of parameters for new node.
         """
         if OPTIMIZER == 'SNOPT':
             options = {'Major optimality tolerance': 1.0e-5}
@@ -483,12 +533,10 @@ class Branch_and_Bound(Driver):
                     # --------------------------------------------------------------
                     S4_fail = False
                     x_comL, x_comU, Ain_hat, bin_hat = gen_coeff_bound(lb, ub, obj_surrogate)
-                    sU, eflag_sU = self.maximize_S(x_comL, x_comU, Ain_hat, bin_hat,
-                                                   obj_surrogate)
+                    sU, eflag_sU = self.maximize_S(x_comL, x_comU, Ain_hat, bin_hat)
 
                     if eflag_sU:
-                        yL, eflag_yL = self.minimize_y(x_comL, x_comU, Ain_hat, bin_hat,
-                                                       obj_surrogate)
+                        yL, eflag_yL = self.minimize_y(x_comL, x_comU, Ain_hat, bin_hat)
 
                         if eflag_yL:
                             NegEI = calc_conEI_norm([], obj_surrogate, SSqr=sU, y_hat=yL)
@@ -514,7 +562,7 @@ class Branch_and_Bound(Driver):
                         if np.abs((LBD_prev - LBD_NegConEI) / LBD_prev) < 0.005:
                             priority_flag = 1
 
-                    nodeHist_new = NodeHistclass()
+                    nodeHist_new = NodeHist()
                     nodeHist_new.ubd_track = ubd_track
                     nodeHist_new.ubdloc_best = ubdloc_best
                     nodeHist_new.priority_flag = priority_flag
@@ -587,7 +635,7 @@ class Branch_and_Bound(Driver):
         # print(xI, f)
         return NegEI
 
-    def maximize_S(self, x_comL, x_comU, Ain_hat, bin_hat, surrogate):
+    def maximize_S(self, x_comL, x_comU, Ain_hat, bin_hat):
         """
         Maximize the SigmaSqr Error.
 
@@ -604,11 +652,9 @@ class Branch_and_Bound(Driver):
             Matrix Ain_hat for linear model of constraints.
         bin_hat : ndarray
             Vector bin_hat for linear model of constraints.
-        surrogate : <AMIEGOKrigingSurrogate>
-            Surrogate model of optimized objective with respect to integer design variables.
 
-        Return
-        ------
+        Returns
+        -------
         float
             Maximized upper bound for sigma squared error.
         bool
@@ -621,6 +667,7 @@ class Branch_and_Bound(Driver):
         elif OPTIMIZER == 'CONMIN':
             options = {'DABFUN': 1.0e-5}
 
+        surrogate = self.obj_surrogate
         R_inv = surrogate.R_inv
         SigmaSqr = surrogate.SigmaSqr
         X = surrogate.X
@@ -672,7 +719,6 @@ class Branch_and_Bound(Driver):
         self.xhat_comU = xhat_comU
         self.Ain_hat = Ain_hat
         self.bin_hat = bin_hat
-        self.current_surr = surrogate
 
         opt_x, opt_f, succ_flag, msg = snopt_opt(self.calc_SSqr_convex, x0, xhat_comL,
                                                  xhat_comU, ncon=len(bin_hat),
@@ -717,7 +763,7 @@ class Branch_and_Bound(Driver):
         fail = 0
 
         x_com = dv_dict['x']
-        surrogate = self.current_surr
+        surrogate = self.obj_surrogate
 
         R_inv = surrogate.R_inv
         SigmaSqr = surrogate.SigmaSqr
@@ -779,7 +825,7 @@ class Branch_and_Bound(Driver):
         fail = 0
 
         x_com = dv_dict['x']
-        surrogate = self.current_surr
+        surrogate = self.obj_surrogate
 
         X = surrogate.X
         R_inv = surrogate.R_inv
@@ -826,7 +872,7 @@ class Branch_and_Bound(Driver):
         # print('con deriv', sens_dict['con']['x'])
         return sens_dict, fail
 
-    def minimize_y(self, x_comL, x_comU, Ain_hat, bin_hat, surrogate):
+    def minimize_y(self, x_comL, x_comU, Ain_hat, bin_hat):
         """
         Minimize the lower bound.
 
@@ -840,11 +886,9 @@ class Branch_and_Bound(Driver):
             Matrix Ain_hat for linear model of constraints.
         bin_hat : ndarray
             Vector bin_hat for linear model of constraints.
-        surrogate : <AMIEGOKrigingSurrogate>
-            Surrogate model of optimized objective with respect to integer design variables.
 
-        Return
-        ------
+        Returns
+        -------
         float
             Maximized upper bound for sigma squared error.
         bool
@@ -861,6 +905,7 @@ class Branch_and_Bound(Driver):
         # 2- Uses non-convex relaxation technique (stronger bound) [Future release]
         app = 1
 
+        surrogate = self.obj_surrogate
         X = surrogate.X
         n, k = X.shape
 
@@ -877,7 +922,6 @@ class Branch_and_Bound(Driver):
         self.x_comU = x_comU
         self.Ain_hat = Ain_hat
         self.bin_hat = bin_hat
-        self.current_surr = surrogate
 
         opt_x, opt_f, succ_flag, msg = snopt_opt(self.calc_y_hat_convex, x0, xhat_comL,
                                                  xhat_comU, ncon=len(bin_hat),
@@ -921,7 +965,7 @@ class Branch_and_Bound(Driver):
         fail = 0
 
         x_com = dv_dict['x']
-        surrogate = self.current_surr
+        surrogate = self.obj_surrogate
 
         X = surrogate.X
         c_r = surrogate.c_r
@@ -971,7 +1015,7 @@ class Branch_and_Bound(Driver):
         """
         fail = 0
         x_com = dv_dict['x']
-        surrogate = self.current_surr
+        surrogate = self.obj_surrogate
 
         X = surrogate.X
         c_r = surrogate.c_r
@@ -1047,8 +1091,8 @@ def update_active_set(active_set, ubd):
     Remove variables from the active set data structure if their current upper bound exceeds the
     given value.
 
-    Args
-    ----
+    Parameters
+    ----------
     active_set : list of lists of floats
         Active set data structure of form [[NodeNumber, lb, ub, LBD, UBD], [], ..]
     ubd : float
@@ -1073,9 +1117,9 @@ def gen_coeff_bound(xI_lb, xI_ub, surrogate):
 
     Parameters
     ----------
-    lb_x : ndarray
+    xI_lb : ndarray
         Lower bound of the integer design variables.
-    ub_x : ndarray
+    xI_ub : ndarray
         Upper bound of the integer design variables.
     surrogate : <AMIEGOKrigingSurrogate>
         Surrogate model of optimized objective with respect to integer design variables.
@@ -1336,6 +1380,26 @@ def init_nodes(N, xL_iter, xU_iter, par_node, LBD_prev, LBD, UBD, fopt, xopt, no
     ----------
     N : integer
         Number of processors
+    xL_iter : ndarray
+        Lower bound of design variables.
+    xU_iter : ndarray
+        Upper bound of design variables.
+    par_node : int
+        Index of parent node for this child node.
+    LBD_prev : float
+        Previous iteration value of LBD.
+    LBD : float
+        Current value of lower bound estimate.
+    UBD : float
+        Current value of upper bound esimate.
+    fopt : float
+        Current best objective value
+    xopt : ndarray
+        Current best design values.
+    nodeHist : <NodeHist>
+        Data structure containing information about this node.
+    ubd_count : int
+        Counter for number of generations.
 
     Returns
     -------
@@ -1389,9 +1453,18 @@ def init_nodes(N, xL_iter, xU_iter, par_node, LBD_prev, LBD, UBD, fopt, xopt, no
     return args
 
 
-class NodeHistclass():
+class NodeHist():
     """
     Data object for keeping track of statistics of each branch and bound node.
+
+    Attributes
+    ----------
+    ubd_track : ndarray
+        Upper bound array.
+    ubdloc_best : float
+        Lowest upper bound estimate.
+    priority_flag : bool
+        Higher priority nodes will be given more population in the GA.
     """
 
     def __init__(self):

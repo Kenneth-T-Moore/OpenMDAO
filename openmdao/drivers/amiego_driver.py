@@ -24,7 +24,7 @@ import numpy as np
 from openmdao.core.driver import Driver
 from openmdao.drivers.amiego_util.branch_and_bound import Branch_and_Bound
 from openmdao.drivers.amiego_util.kriging import AMIEGOKrigingSurrogate
-from openmdao.drivers.scipy_optimizer import ScipyOptimizer
+from openmdao.drivers.scipy_optimizer import ScipyOptimizeDriver
 from openmdao.recorders.recording_iteration_stack import Recording
 
 
@@ -45,6 +45,8 @@ class AMIEGO_driver(Driver):
 
     Options
     -------
+    options['disp'] : bool
+        Display flag. Toggle printing of AMIEGO output to stdout.
     options['ei_tol_rel'] :  0.001
         Relative tolerance on the expected improvement.
     options['max_infill_points'] : 10
@@ -107,7 +109,7 @@ class AMIEGO_driver(Driver):
                     desc='Constraint penalty applied to objective.')
 
         # The default continuous optimizer. User can slot a different one
-        self.cont_opt = ScipyOptimizer()
+        self.cont_opt = ScipyOptimizeDriver()
         self.cont_opt.options['optimizer'] = 'SLSQP'
 
         # The default MINLP optimizer
@@ -448,9 +450,9 @@ class AMIEGO_driver(Driver):
                 g_mean = np.mean(val, axis=0)
                 g_std = np.std(val, axis=0)
                 g_std[g_std == 0.] = 1.0
-                g_norm = (val - g_mean)/g_std
-                g_vio_ub = val_u/g_std
-                g_vio_lb = val_l/g_std
+                g_norm = (val - g_mean) / g_std
+                g_vio_ub = val_u / g_std
+                g_vio_lb = val_l / g_std
 
                 # Make the problem appear unconstrained to Amiego
                 M = val.shape[1]
@@ -467,14 +469,10 @@ class AMIEGO_driver(Driver):
 
             for ii in range(n):
                 if num_vio[ii] > 0:
-                    #obj_surr[ii] = obj_surr[ii] / (1.0 + r_pen * P[ii] / num_vio[ii])
                     Y[ii] += (r_pen * P[ii] / num_vio[ii])
 
             obj_surrogate = self.surrogate()
             obj_surrogate.use_snopt = True
-
-            #obj_surrogate.train(x_i, obj_surr, KPLS=True)
-            #obj_surrogate.y = obj_surr
 
             obj_surrogate.X, obj_surrogate.X_mean, obj_surrogate.X_std = X, X_mean, X_std
             obj_surrogate.Y, obj_surrogate.Y_mean, obj_surrogate.Y_std = Y, Y_mean, Y_std

@@ -23,6 +23,47 @@ class AMIEGOKrigingSurrogate(object):
 
     Predictions are returned as a tuple of mean and RMSE. Based on Gaussian Processes
     for Machine Learning (GPML) by Rasmussen and Williams. (see also: scikit-learn).
+
+    Attributes
+    ----------
+    c_r : ndarray
+        Reduced likelyhood parameter c_r.
+    comm : MPI communicator or None
+        The MPI communicator from parent solver's containing group.
+    eval_rmse : bool
+        When true, calculate the root mean square prediction error.
+    n_dims : int
+        Number of independents in the surrogate
+    n_samples : int
+        Number of training points.
+    nugget : double or ndarray, optional
+        Nugget smoothing parameter for smoothing noisy data. Represents the variance
+        of the input values. If nugget is an ndarray, it must be of the same length
+        as the number of training points. Default: 10. * Machine Epsilon
+    pcom : int
+        Internally calculated optimal number of hyperparameters.
+    SigmaSqr : ndarray
+        Reduced likelyhood parameter: sigma squared
+    thetas : ndarray
+        Kriging hyperparameters.
+    trained : bool
+        True when surrogate has been trained.
+    use_snopt : bool
+        Set to True to use pyOptSparse and SNOPT.
+    Wstar : ndarray
+        The weights for KPLS.
+    X : ndarray
+        Training input values, normalized.
+    X_mean : ndarray
+        Mean of training input values, normalized.
+    X_std : ndarray
+        Standard deviation of training input values, normalized.
+    Y : ndarray
+        Training model response values, normalized.
+    Y_mean : ndarray
+        Mean of training model response values, normalized.
+    Y_std : ndarray
+        Standard deviation of training model response values, normalized.
     """
 
     def __init__(self, nugget=10. * MACHINE_EPSILON, eval_rmse=False):
@@ -69,8 +110,8 @@ class AMIEGOKrigingSurrogate(object):
         """
         Train the surrogate model with the given set of inputs and outputs.
 
-        Args
-        ----
+        Parameters
+        ----------
         x : array-like
             Training input locations
         y : array-like
@@ -178,10 +219,17 @@ class AMIEGOKrigingSurrogate(object):
         This has been parallelized so that the best value can be found from a set of
         optimization starting points.
 
-        Args
-        ----
-        point: list
+        Parameters
+        ----------
+        point : list
             Starting point for opt.
+
+        Returns
+        -------
+        ndarray
+            Optimal Hyperparameters.
+        float
+            Objective value from optimizing the hyperparameters.
         """
         x0 = -3.0 * np.ones((self.pcom, )) + point * (5.0 * np.ones((self.pcom, )))
 
@@ -246,6 +294,13 @@ class AMIEGOKrigingSurrogate(object):
         ----------
         thetas : ndarray, optional
             Given input correlation coefficients. If none given, uses self.thetas from training.
+
+        Returns
+        -------
+        float
+            Calculated reduced likelihood.
+        dict
+            Dictionary of reduced likelyhood parameters.
         """
         if thetas is None:
             thetas = self.thetas
@@ -303,9 +358,6 @@ class AMIEGOKrigingSurrogate(object):
         ----------
         x : array-like
             Point at which the surrogate is evaluated.
-        normalize : bool
-            Normalize the training data to lie on [-1, 1]. Default is True, but
-            some applications like Branch and Bound require False.
 
         Returns
         -------
