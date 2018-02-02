@@ -215,11 +215,11 @@ class pyOptSparseDriver(Driver):
         # Metadata Setup
         self.metadata = create_local_meta(self.options['optimizer'])
 
-        with RecordingDebugging(self.options['optimizer'], self.iter_count, self) as rec:
-            # Initial Run
-            model._solve_nonlinear()
-            rec.abs = 0.0
-            rec.rel = 0.0
+        #with RecordingDebugging(self.options['optimizer'], self.iter_count, self) as rec:
+        #    # Initial Run
+        #    model._solve_nonlinear()
+        #    rec.abs = 0.0
+        #    rec.rel = 0.0
         self.iter_count += 1
 
         opt_prob = Optimization(self.options['title'], self._objfunc)
@@ -387,10 +387,10 @@ class pyOptSparseDriver(Driver):
                 val = dv_dict[name]
                 self.set_design_var(name, val)
 
-            with RecordingDebugging(self.options['optimizer'], self.iter_count, self) as rec:
-                model._solve_nonlinear()
-                rec.abs = 0.0
-                rec.rel = 0.0
+            #with RecordingDebugging(self.options['optimizer'], self.iter_count, self) as rec:
+            #    model._solve_nonlinear()
+            #    rec.abs = 0.0
+            #    rec.rel = 0.0
             self.iter_count += 1
 
         return self.fail
@@ -416,7 +416,6 @@ class pyOptSparseDriver(Driver):
             0 for successful function evaluation
             1 for unsuccessful function evaluation
         """
-        print('obj dv', dv_dict)
         model = self._problem.model
         fail = 0
 
@@ -485,7 +484,6 @@ class pyOptSparseDriver(Driver):
             0 for successful function evaluation
             1 for unsuccessful function evaluation
         """
-        print('adj dv', dv_dict)
         prob = self._problem
         fail = 0
 
