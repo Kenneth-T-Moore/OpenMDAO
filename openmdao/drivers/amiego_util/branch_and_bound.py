@@ -1352,7 +1352,7 @@ def calc_conEI_norm(xval, obj_surrogate, SSqr=None, y_hat=None):
         y_hat = mu + np.dot(r, c_r)
         term0 = np.dot(R_inv, r)
 
-        # Note: This dot product with one stuff seems to be faster than np.sum for these small
+        # Note: This "dot product with one" stuff seems to be faster than np.sum for these small
         # sized matrices.
         SSqr = SigmaSqr * (1.0 - r.dot(term0) +
                            ((1.0 - one.dot(term0))**2) / (one.dot(np.dot(R_inv, one))))

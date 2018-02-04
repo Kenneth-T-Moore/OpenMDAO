@@ -77,8 +77,6 @@ class AMIEGO_driver(Driver):
         Initial sampling points.
     sampling_eflag : dict(list)
         Optional success flag from user-supplied pre-optimized initial samples.
-    surrogate : <AMIEGOKrigingSurrogate>
-        Surrogate model to use to model objective as a function of the integer design vars.
     """
 
     def __init__(self):
@@ -419,8 +417,8 @@ class AMIEGO_driver(Driver):
 
             # TODO: Scale back the objective to the original Value
             # As Kriging objective is normalized separately
-            scale_fac_conopt = np.array([1.0e3])
-            obj_surr = obj[:] * scale_fac_conopt
+            #scale_fac_conopt = np.array([1.0e3])
+            #obj_surr = obj[:] * scale_fac_conopt
 
             num_vio = np.zeros((n, 1), dtype=np.int)
 
