@@ -132,6 +132,9 @@ class AMIEGO_driver(Driver):
         self.con_sampling = None
         self.sampling_eflag = None
 
+        # User can specify a subset of integer constraints.
+        self.int_con = None
+
     def _setup_driver(self, problem, assemble_var_info=True):
         """
         Prepare the driver for execution.
@@ -186,6 +189,13 @@ class AMIEGO_driver(Driver):
                 abs_name = prom2abs[name][0]
                 con_sampling_abs_names[abs_name] = data
             self.con_sampling = con_sampling_abs_names
+
+        # If the user doesn't specify a subset of cons that are influenced by the integer
+        # vars, then use them all.
+        if self.int_con is None:
+            self.int_con = list(con_sampling_abs_names.keys())
+        else:
+            self.int_con = [prom2abs[name][0] for name in self.int_con]
 
         for name, val in iteritems(self.get_design_var_values()):
             if name in i_dvs:
@@ -247,6 +257,7 @@ class AMIEGO_driver(Driver):
         minlp = self.minlp
         xI_lb = self.xI_lb
         xI_ub = self.xI_ub
+        int_con = self.int_con
 
         self.iter_count = 0
 
@@ -435,6 +446,11 @@ class AMIEGO_driver(Driver):
             Y = (obj_surr - Y_mean) / Y_std
 
             for name, val in iteritems(cons):
+
+                # Only penalize with constraints that are functions of the integer vars.
+                if name not in int_con:
+                    continue
+
                 val = np.array(val)
 
                 # Note, Branch and Bound defines constraints to be violated

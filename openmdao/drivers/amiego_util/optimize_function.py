@@ -67,8 +67,8 @@ def snopt_opt(objfun, desvar, lb, ub, ncon=None, title=None, options=None,
     opt_prob.addVarGroup('x', ndv, type='c', value=desvar.flatten(), lower=lb.flatten(),
                          upper=ub.flatten())
     if ncon is not None:
-        opt_prob.addConGroup('con', ncon, upper=np.zeros((ncon)), linear=True, wrt='x',
-                             jac={'x': jac})
+        opt_prob.addConGroup('con', ncon, upper=np.zeros((ncon)))#, linear=True, wrt='x',
+                             #jac={'x': jac})
     opt_prob.addObj('obj')
 
     # Fall back on SLSQP or COBYLA if SNOPT isn't there

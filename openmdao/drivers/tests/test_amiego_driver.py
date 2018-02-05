@@ -157,6 +157,7 @@ class TestAMIEGOdriver(unittest.TestCase):
         prob.driver.sampling = {'mat' : samples}
         prob.driver.obj_sampling = {'mass' : obj_samples}
         prob.driver.con_sampling = {'stress' : con_samples}
+        prob.driver.int_con = ['stress']
 
         prob.setup(check=False)
 
