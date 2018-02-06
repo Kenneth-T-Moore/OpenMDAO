@@ -400,6 +400,12 @@ class AMIEGO_driver(Driver):
                 current_obj = current_objs[obj_name].copy()
                 obj.append(current_obj)
                 for name, value in iteritems(self.get_constraint_values()):
+
+                    # We only penalize with constraints that are functions of the integer vars,
+                    # so only need to keep track of those.
+                    if name not in int_con:
+                        continue
+
                     cons[name].append(value.copy())
 
                 # If best solution, save it
@@ -446,10 +452,6 @@ class AMIEGO_driver(Driver):
             Y = (obj_surr - Y_mean) / Y_std
 
             for name, val in iteritems(cons):
-
-                # Only penalize with constraints that are functions of the integer vars.
-                if name not in int_con:
-                    continue
 
                 val = np.array(val)
 
