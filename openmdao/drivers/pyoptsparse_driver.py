@@ -9,6 +9,7 @@ additional MPI capability.
 from __future__ import print_function
 from collections import OrderedDict
 import traceback
+import sys
 
 from six import iteritems
 
@@ -423,7 +424,7 @@ class pyOptSparseDriver(Driver):
             for name in self._indep_list:
                 self.set_design_var(name, dv_dict[name])
 
-            # print("Setting DV")
+            print("Setting DV from pyoptsparse")
             # print(dv_dict)
 
             # Execute the model
@@ -457,6 +458,7 @@ class pyOptSparseDriver(Driver):
             func_dict = {}
 
         print("Functions calculated")
+        sys.stdout.flush()
         # print(dv_dict)
 
         return func_dict, fail
@@ -488,7 +490,7 @@ class pyOptSparseDriver(Driver):
         fail = 0
 
         try:
-
+            print("Starting Derivative Calculation.")
             try:
                 sens_dict = self._compute_totals(of=self._quantities,
                                                  wrt=self._indep_list,
@@ -530,6 +532,7 @@ class pyOptSparseDriver(Driver):
             sens_dict = {}
 
         print("Derivatives calculated")
+        sys.stdout.flush()
         # print(dv_dict)
         # print(sens_dict)
         return sens_dict, fail
