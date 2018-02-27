@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 
 from openmdao.api import IndepVarComp, Group, Problem, ExecComp, pyOptSparseDriver
-from openmdao.devtools.testutil import assert_rel_error
+from openmdao.utils.assert_utils import assert_rel_error
 from openmdao.drivers.amiego_driver import AMIEGO_driver
 from openmdao.test_suite.components.branin import Branin
 from openmdao.test_suite.components.three_bar_truss import ThreeBarTruss, ThreeBarTrussVector

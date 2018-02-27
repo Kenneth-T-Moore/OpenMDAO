@@ -10,6 +10,7 @@ from six.moves import zip, range
 import numpy as np
 import scipy.linalg as linalg
 from scipy.optimize import minimize
+from pyDOE import lhs
 
 from openmdao.drivers.amiego_util.optimize_function import snopt_opt
 from openmdao.utils.concurrent import concurrent_eval_lb, concurrent_eval
@@ -149,6 +150,8 @@ class AMIEGOKrigingSurrogate(object):
             self.X_mean, self.X_std = X_mean, X_std
             self.Y_mean, self.Y_std = Y_mean, Y_std
 
+        comm = self.comm  
+        num_pts = max([30, 3*comm.size])
         if KPLS:
             # Maximum number of hyper-parameters we want to afford
             pcom_max = 3
@@ -158,31 +161,15 @@ class AMIEGOKrigingSurrogate(object):
 
             self.Wstar = self.KPLS_reg()
             if self.pcom >= 3:
-                # TODO: Read this from a file
-                start_point = [[0.5, 0.5714, 0.5714],
-                               [0.6429, 0.0714, 0.3571],
-                               [0.9286, 0.7857, 0.7857],
-                               [0.3571, 0.7143, 0.1429],
-                               [0.8571, 0.2857, 0.6429],
-                               [0.7857, 0.8571, 0.2857],
-                               [0.0714, 0.6429, 0.8571],
-                               [1.0, 0.0, 0.0714],
-                               [0.2857, 0.2143, 0.7143],
-                               [0., 0.4286, 0.4286],
-                               [0.5714, 0.3571, 1.0],
-                               [0.2143, 1.0, 0.5],
-                               [0.1429, 0.1429, 0.2143],
-                               [0.7143, 0.5, 0.0],
-                               [0.4286, 0.9286, 0.9286]]
+                start_point = lhs(3, num_pts)
             else:
-                start_point = [[0.25], [0.5], [0.75]]
+                start_point = lhs(self.n_dims,30)
         else:
             self.Wstar = np.identity(self.n_dims)
             self.pcom = self.n_dims
-            start_point = [[0.25], [0.5], [0.75]]
+            start_point = lhs(self.n_dims,num_pts)
 
         # Multi-start approach (starting from 10*pcom_max different locations)
-        comm = self.comm
         if comm is not None and comm.size < 2:
             comm = None
         cases = [([pt], None) for pt in start_point]

@@ -193,7 +193,7 @@ class AMIEGO_driver(Driver):
         # If the user doesn't specify a subset of cons that are influenced by the integer
         # vars, then use them all.
         if self.int_con is None:
-            self.int_con = list(con_sampling_abs_names.keys())
+            self.int_con = list(self._cons.keys())
         else:
             self.int_con = [prom2abs[name][0] for name in self.int_con]
 
