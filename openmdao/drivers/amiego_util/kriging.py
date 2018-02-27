@@ -150,7 +150,7 @@ class AMIEGOKrigingSurrogate(object):
             self.X_mean, self.X_std = X_mean, X_std
             self.Y_mean, self.Y_std = Y_mean, Y_std
 
-        comm = self.comm  
+        comm = self.comm
         num_pts = max([30, 3*comm.size])
         if KPLS:
             # Maximum number of hyper-parameters we want to afford
@@ -163,15 +163,16 @@ class AMIEGOKrigingSurrogate(object):
             if self.pcom >= 3:
                 start_point = lhs(3, num_pts)
             else:
-                start_point = lhs(self.n_dims,30)
+                start_point = lhs(self.n_dims, 30)
         else:
             self.Wstar = np.identity(self.n_dims)
             self.pcom = self.n_dims
-            start_point = lhs(self.n_dims,num_pts)
+            start_point = lhs(self.n_dims, num_pts)
 
         # Multi-start approach (starting from 10*pcom_max different locations)
         if comm is not None and comm.size < 2:
             comm = None
+
         cases = [([pt], None) for pt in start_point]
         results = concurrent_eval_lb(self._calculate_thetas, cases,
                                      comm, broadcast=True)

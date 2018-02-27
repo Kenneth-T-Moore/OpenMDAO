@@ -489,6 +489,7 @@ class AMIEGO_driver(Driver):
 
             obj_surrogate = self.surrogate()
             obj_surrogate.use_snopt = True
+            obj_surrogate.comm = problem.model.comm
 
             obj_surrogate.X, obj_surrogate.X_mean, obj_surrogate.X_std = X, X_mean, X_std
             obj_surrogate.Y, obj_surrogate.Y_mean, obj_surrogate.Y_std = Y, Y_mean, Y_std
