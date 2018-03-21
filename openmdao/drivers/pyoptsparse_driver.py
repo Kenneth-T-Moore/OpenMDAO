@@ -9,6 +9,7 @@ additional MPI capability.
 from __future__ import print_function
 from collections import OrderedDict
 import traceback
+import sys
 
 from six import iteritems, itervalues
 
@@ -386,10 +387,10 @@ class pyOptSparseDriver(Driver):
                 val = dv_dict[name]
                 self.set_design_var(name, val)
 
-            with RecordingDebugging(self.options['optimizer'], self.iter_count, self) as rec:
-                model._solve_nonlinear()
-                rec.abs = 0.0
-                rec.rel = 0.0
+            #with RecordingDebugging(self.options['optimizer'], self.iter_count, self) as rec:
+            #    model._solve_nonlinear()
+            #    rec.abs = 0.0
+            #    rec.rel = 0.0
             self.iter_count += 1
 
         return self.fail
@@ -422,7 +423,7 @@ class pyOptSparseDriver(Driver):
             for name in self._indep_list:
                 self.set_design_var(name, dv_dict[name])
 
-            # print("Setting DV")
+            # print("Setting DV from pyoptsparse")
             # print(dv_dict)
 
             # Execute the model
@@ -455,7 +456,8 @@ class pyOptSparseDriver(Driver):
             fail = 1
             func_dict = {}
 
-        # print("Functions calculated")
+        #print("Functions calculated")
+        #sys.stdout.flush()
         # print(dv_dict)
 
         return func_dict, fail
@@ -487,7 +489,7 @@ class pyOptSparseDriver(Driver):
         fail = 0
 
         try:
-
+            #print("Starting Derivative Calculation.")
             try:
                 sens_dict = self._compute_totals(of=self._quantities,
                                                  wrt=self._indep_list,
@@ -528,7 +530,8 @@ class pyOptSparseDriver(Driver):
             print(70 * "=", tb, 70 * "=")
             sens_dict = {}
 
-        # print("Derivatives calculated")
+        #print("Derivatives calculated")
+        #sys.stdout.flush()
         # print(dv_dict)
         # print(sens_dict)
         return sens_dict, fail
