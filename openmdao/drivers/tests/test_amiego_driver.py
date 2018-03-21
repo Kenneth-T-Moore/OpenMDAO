@@ -5,10 +5,10 @@ import unittest
 import numpy as np
 
 from openmdao.api import IndepVarComp, Group, Problem, ExecComp, pyOptSparseDriver
-from openmdao.utils.assert_utils import assert_rel_error
 from openmdao.drivers.amiego_driver import AMIEGO_driver
 from openmdao.test_suite.components.branin import Branin
 from openmdao.test_suite.components.three_bar_truss import ThreeBarTruss, ThreeBarTrussVector
+from openmdao.utils.assert_utils import assert_rel_error
 from openmdao.utils.general_utils import set_pyoptsparse_opt
 
 # check that pyoptsparse is installed
@@ -168,40 +168,39 @@ class TestAMIEGOdriver(unittest.TestCase):
         assert_rel_error(self, prob['mat'][1], 3, 1e-5)
         # Material 3 can be anything
 
-    #def test_simple_greiwank_opt(self):
+    def test_simple_greiwank_opt(self):
+        from openmdao.test_suite.components.greiwank import Greiwank
+        prob = Problem()
+        model = prob.model
 
-        #unittest.SkipTest('TODO: Make this a bit more robust.')
+        model.add_subsystem('p1', IndepVarComp('xC', np.array([0.0, 0.0, 0.0])), promotes=['*'])
+        model.add_subsystem('p2', IndepVarComp('xI', np.array([0, 0, 0])), promotes=['*'])
+        model.add_subsystem('comp', Greiwank(num_cont=3, num_int=3), promotes=['*'])
 
-        #prob = Problem()
-        #model = prob.model = Group()
+        prob.driver = AMIEGO_driver()
+        prob.driver.cont_opt.options['tol'] = 1e-12
+        prob.driver.options['disp'] = True
 
-        #model.add('p1', IndepVarComp('xC', np.array([0.0, 0.0, 0.0])), promotes=['*'])
-        #model.add('p2', IndepVarComp('xI', np.array([0, 0, 0])), promotes=['*'])
-        #model.add('comp', Greiwank(num_cont=3, num_int=3), promotes=['*'])
+        model.add_design_var('xI', lower=-5, upper=5)
+        model.add_design_var('xC', lower=-5.0, upper=5.0)
 
-        #prob.driver = AMIEGO_driver()
-        #prob.driver.cont_opt.options['tol'] = 1e-12
-        #prob.driver.options['disp'] = True
-        #model.deriv_options['type'] = 'fd'
+        model.add_objective('f')
+        samples = np.array([[1.0, 0.25, 0.75],
+                            [0.0, 0.75, 0.0],
+                            [0.75, 0.0, 0.25],
+                            [0.75, 1.0, 0.5],
+                            [0.25, 0.5, 1.0]])
+        # prob.driver.sampling = {'xI' : np.array([[0.0], [.76], [1.0]])}
+        prob.driver.sampling = {'xI' : samples}
 
-        #prob.driver.add_desvar('xI', lower=-5, upper=5)
-        #prob.driver.add_desvar('xC', lower=-5.0, upper=5.0)
+        prob.setup(check=False)
+        prob.run_driver()
 
-        #prob.driver.add_objective('f')
-        #samples = np.array([[1.0, 0.25, 0.75],
-                            #[0.0, 0.75, 0.0],
-                            #[0.75, 0.0, 0.25],
-                            #[0.75, 1.0, 0.5],
-                            #[0.25, 0.5, 1.0]])
-        ## prob.driver.sampling = {'xI' : np.array([[0.0], [.76], [1.0]])}
-        #prob.driver.sampling = {'xI' : samples}
-
-        #prob.setup(check=False)
-        #prob.run()
-
-        ## Optimal solution
-        #assert_rel_error(self, prob['f'], 0.0, 1e-5)
-        #assert_rel_error(self, prob['xI'], 0.0, 1e-5)
+        # Optimal solution
+        assert_rel_error(self, prob['f'], 0.0, 1e-5)
+        assert_rel_error(self, prob['xI'][0], 0.0, 1e-5)
+        assert_rel_error(self, prob['xI'][1], 0.0, 1e-5)
+        assert_rel_error(self, prob['xI'][2], 0.0, 1e-5)
 
 
 if __name__ == "__main__":
