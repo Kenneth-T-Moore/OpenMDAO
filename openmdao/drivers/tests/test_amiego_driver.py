@@ -168,40 +168,6 @@ class TestAMIEGOdriver(unittest.TestCase):
         assert_rel_error(self, prob['mat'][1], 3, 1e-5)
         # Material 3 can be anything
 
-    def test_simple_greiwank_opt(self):
-        from openmdao.test_suite.components.greiwank import Greiwank
-        prob = Problem()
-        model = prob.model
-
-        model.add_subsystem('p1', IndepVarComp('xC', np.array([0.0, 0.0, 0.0])), promotes=['*'])
-        model.add_subsystem('p2', IndepVarComp('xI', np.array([0, 0, 0])), promotes=['*'])
-        model.add_subsystem('comp', Greiwank(num_cont=3, num_int=3), promotes=['*'])
-
-        prob.driver = AMIEGO_driver()
-        prob.driver.cont_opt.options['tol'] = 1e-12
-        prob.driver.options['disp'] = True
-
-        model.add_design_var('xI', lower=-5, upper=5)
-        model.add_design_var('xC', lower=-5.0, upper=5.0)
-
-        model.add_objective('f')
-        samples = np.array([[1.0, 0.25, 0.75],
-                            [0.0, 0.75, 0.0],
-                            [0.75, 0.0, 0.25],
-                            [0.75, 1.0, 0.5],
-                            [0.25, 0.5, 1.0]])
-        # prob.driver.sampling = {'xI' : np.array([[0.0], [.76], [1.0]])}
-        prob.driver.sampling = {'xI' : samples}
-
-        prob.setup(check=False)
-        prob.run_driver()
-
-        # Optimal solution
-        assert_rel_error(self, prob['f'], 0.0, 1e-5)
-        assert_rel_error(self, prob['xI'][0], 0.0, 1e-5)
-        assert_rel_error(self, prob['xI'][1], 0.0, 1e-5)
-        assert_rel_error(self, prob['xI'][2], 0.0, 1e-5)
-
 
 if __name__ == "__main__":
     unittest.main()
