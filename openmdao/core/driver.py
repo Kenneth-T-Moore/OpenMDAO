@@ -37,7 +37,7 @@ def _is_debug_print_opts_valid(opts):
     """
     if not isinstance(opts, list):
         return False
-    _valid_opts = ['desvars', 'nl_cons', 'ln_cons', 'objs']
+    _valid_opts = ['desvars', 'nl_cons', 'ln_cons', 'objs', 'totals']
     for opt in opts:
         if opt not in _valid_opts:
             return False
@@ -190,19 +190,6 @@ class Driver(object):
         self.supports.declare('mixed_integer', types=bool, default=False)
         self.supports.declare('simultaneous_derivatives', types=bool, default=False)
         self.supports.declare('total_jac_sparsity', types=bool, default=False)
-
-        # Debug printing.
-        self.debug_print = OptionsDictionary()
-        self.debug_print.declare('debug_print', types=bool, default=False,
-                                 desc='Overall option to turn on Driver debug printing')
-        self.debug_print.declare('debug_print_desvars', types=bool, default=False,
-                                 desc='Print design variables')
-        self.debug_print.declare('debug_print_nl_con', types=bool, default=False,
-                                 desc='Print nonlinear constraints')
-        self.debug_print.declare('debug_print_ln_con', types=bool, default=False,
-                                 desc='Print linear constraints')
-        self.debug_print.declare('debug_print_objective', types=bool, default=False,
-                                 desc='Print objectives')
 
         self.iter_count = 0
         self.metadata = None
@@ -400,6 +387,8 @@ class Driver(object):
                 self._model_viewer_data = _get_viewer_data(problem)
             self._rec_mgr.record_metadata(self)
 
+        desvar_size = np.sum(data['size'] for data in itervalues(self._designvars))
+
         # set up simultaneous deriv coloring
         if (coloring_mod._use_sparsity and self._simul_coloring_info and
                 self.supports['simultaneous_derivatives']):
@@ -407,8 +396,6 @@ class Driver(object):
                 self._setup_simul_coloring(problem._mode)
             else:
                 raise RuntimeError("simultaneous derivs are currently not supported in rev mode.")
-
-        desvar_size = np.sum(data['size'] for data in itervalues(self._designvars))
 
         # if we're using simultaneous derivatives then our effective design var size is less
         # than the full design var size
@@ -701,15 +688,24 @@ class Driver(object):
             Derivatives in form requested by 'return_format'.
         """
         total_jac = self._total_jac
+        debug_print = 'totals' in self.options['debug_print'] and (not MPI or
+                                                                   MPI.COMM_WORLD.rank == 0)
+
+        if debug_print:
+            header = 'Driver total derivatives for iteration: ' + str(self.iter_count)
+            print(header)
+            print(len(header) * '-' + '\n')
 
         if self._problem.model._owns_approx_jac:
             if total_jac is None:
                 self._total_jac = total_jac = _TotalJacInfo(self._problem, of, wrt, global_names,
-                                                            return_format, approx=True)
+                                                            return_format, approx=True,
+                                                            debug_print=debug_print)
             return total_jac.compute_totals_approx()
         else:
             if total_jac is None:
-                total_jac = _TotalJacInfo(self._problem, of, wrt, global_names, return_format)
+                total_jac = _TotalJacInfo(self._problem, of, wrt, global_names, return_format,
+                                          debug_print=debug_print)
 
             # don't cache linear constraint jacobian
             if not total_jac.has_lin_cons:
@@ -934,27 +930,27 @@ class Driver(object):
         if not coloring_mod._use_sparsity:
             return
 
-        prom2abs = self._problem.model._var_allprocs_prom2abs_list['output']
-
         if isinstance(self._simul_coloring_info, string_types):
             with open(self._simul_coloring_info, 'r') as f:
                 self._simul_coloring_info = json.load(f)
-                tup = self._simul_coloring_info
-                column_lists, row_map = tup[:2]
-                if len(tup) > 2:
-                    sparsity = tup[2]
-                    if self._total_jac_sparsity is not None:
-                        raise RuntimeError("Total jac sparsity was set in both _simul_coloring_info"
-                                           " and _total_jac_sparsity.")
-                    self._total_jac_sparsity = sparsity
 
-                self._simul_coloring_info = column_lists, row_map
+        tup = self._simul_coloring_info
+        column_lists, row_map = tup[:2]
+        if len(tup) > 2:
+            sparsity = tup[2]
+            if self._total_jac_sparsity is not None:
+                raise RuntimeError("Total jac sparsity was set in both _simul_coloring_info"
+                                   " and _total_jac_sparsity.")
+            self._total_jac_sparsity = sparsity
+
+        self._simul_coloring_info = column_lists, row_map
 
     def _pre_run_model_debug_print(self):
         """
         Optionally print some debugging information before the model runs.
         """
-        if not self.options['debug_print']:
+        debug_opt = self.options['debug_print']
+        if not debug_opt or debug_opt == ['totals']:
             return
 
         if not MPI or MPI.COMM_WORLD.rank == 0:
@@ -963,7 +959,7 @@ class Driver(object):
             print(header)
             print(len(header) * '-')
 
-        if 'desvars' in self.options['debug_print']:
+        if 'desvars' in debug_opt:
             desvar_vals = self.get_design_var_values(unscaled=True, ignore_indices=True)
             if not MPI or MPI.COMM_WORLD.rank == 0:
                 print("Design Vars")
