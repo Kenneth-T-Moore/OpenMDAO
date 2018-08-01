@@ -10,7 +10,7 @@ import pprint
 from six import iteritems
 from six.moves import zip
 import sys
-import time
+from time import time
 
 import numpy as np
 
@@ -150,6 +150,10 @@ class _TotalJacInfo(object):
         self.output_meta = {'fwd': responses, 'rev': design_vars}
         self.input_vec = {'fwd': model._vectors['residual'], 'rev': model._vectors['output']}
         self.output_vec = {'fwd': model._vectors['output'], 'rev': model._vectors['residual']}
+
+        self.time_linearize_sys = 0
+        self.time_lienarize_solver = 0
+        self.time_solve = 0
 
         abs2meta = model._var_allprocs_abs2meta
 
@@ -1058,10 +1062,15 @@ class _TotalJacInfo(object):
             vec_dresid[vec_name].set_const(0.0)
 
         # Linearize Model
+        t0 = time()
         model._linearize(model._assembled_jac, sub_do_ln=model._linear_solver._linearize_children())
+        self.time_linearize_sys += time() - t0
+        t0 = time()
         model._linear_solver._linearize()
+        self.time_lienarize_solver += time() - t0
 
         # Main loop over columns (fwd) or rows (rev) of the jacobian
+        t0 = time()
         for key, meta in iteritems(self.idx_iter_dict[self.mode]):
             _, _, idxs, idx_iter = meta
             for inds, input_setter, jac_setter, mode in idx_iter(idxs):
@@ -1084,7 +1093,7 @@ class _TotalJacInfo(object):
 
                     sys.stdout.flush()
 
-                    t0 = time.time()
+                    t0 = time()
 
                 # restore old linear solution if cache_linear_solution was set by the user for
                 # any input variables involved in this linear solution.
@@ -1096,11 +1105,12 @@ class _TotalJacInfo(object):
                     model._solve_linear(model._lin_vec_names, mode, rel_systems)
 
                 if debug_print:
-                    print('Elapsed Time:', time.time() - t0, '\n')
+                    print('Elapsed Time:', time() - t0, '\n')
                     sys.stdout.flush()
 
                 jac_setter(inds, mode)
 
+        self.time_solve += time() - t0
         if self.has_scaling:
             self._do_scaling(self.J_dict)
 

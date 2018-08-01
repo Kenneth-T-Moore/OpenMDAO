@@ -1367,6 +1367,7 @@ class Problem(object):
             else:
                 total_info = _TotalJacInfo(self, of, wrt, False, return_format,
                                            debug_print=debug_print, driver_scaling=driver_scaling)
+                self.total_jac = total_info
                 return total_info.compute_totals()
 
     def set_solver_print(self, level=2, depth=1e99, type_='all'):

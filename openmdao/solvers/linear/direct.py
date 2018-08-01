@@ -4,6 +4,7 @@ from __future__ import division, print_function
 
 import sys
 import warnings
+from time import time
 from six import reraise, PY2
 from six.moves import range
 
@@ -153,6 +154,22 @@ class DirectSolver(LinearSolver):
 
     SOLVER = 'LN: Direct'
 
+    def __init__(self, **kwargs):
+        """
+        Initialize all attributes.
+
+        Parameters
+        ----------
+        **kwargs : dict
+            options dictionary.
+        """
+        super(LinearSolver, self).__init__(**kwargs)
+
+        self.time_assemble = 0.0
+        self.time_lu_fact = 0.0
+        self.time_lu_solve = 0.0
+
+
     def _declare_options(self):
         """
         Declare options before kwargs are processed in the init method.
@@ -249,6 +266,7 @@ class DirectSolver(LinearSolver):
                         raise RuntimeError(format_nan_error(system, matrix))
 
             elif isinstance(mtx, (CSRMatrix, CSCMatrix)):
+                t0 = time()
                 try:
                     self._lu = scipy.sparse.linalg.splu(matrix)
                 except RuntimeError as err:
@@ -256,6 +274,8 @@ class DirectSolver(LinearSolver):
                         raise RuntimeError(format_singular_csc_error(system, matrix))
                     else:
                         reraise(*sys.exc_info())
+
+                self.time_lu_fact += time() - t0
 
             elif isinstance(mtx, COOMatrix):
                 # calling scipy.sparse.linalg.splu on a COO actually transposes
@@ -381,6 +401,7 @@ class DirectSolver(LinearSolver):
         self._vec_names = vec_names
 
         system = self._system
+        t0 = time()
 
         with Recording('DirectSolver', 0, self) as rec:
             for vec_name in vec_names:
@@ -422,4 +443,5 @@ class DirectSolver(LinearSolver):
                 rec.abs = 0.0
                 rec.rel = 0.0
 
+        self.time_lu_solve += time() - t0
         return False, 0., 0.
