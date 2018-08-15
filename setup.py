@@ -79,7 +79,11 @@ setup(
         'openmdao.docs': ['*.py', '_utils/*.py'],
         'openmdao.recorders': ['tests/legacy_sql/*.sql'],
         'openmdao.utils': ['unit_library.ini'],
-        'openmdao.test_suite': ['*.py', '*/*.py'],
+        'openmdao.test_suite': [
+            '*.py',
+            '*/*.py',
+            'matrices/*.npz'
+        ],
         'openmdao': ['*/tests/*.py', '*/*/tests/*.py', '*/*/*/tests/*.py']
     },
     install_requires=[
@@ -92,6 +96,7 @@ setup(
         'testflo',
         'parameterized',
         'pyparsing',
+        'pyyaml',
         'networkx>=2.0',
         'sphinx',
         'redbaron',
