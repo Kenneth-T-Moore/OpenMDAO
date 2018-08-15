@@ -1211,7 +1211,7 @@ class _TotalJacInfo(object):
                             print('Solving variable:', key)
 
                         sys.stdout.flush()
-                        t0 = time.time()
+                        t0 = time()
 
                     # restore old linear solution if cache_linear_solution was set by the user for
                     # any input variables involved in this linear solution.
