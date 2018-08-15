@@ -163,7 +163,7 @@ class DirectSolver(LinearSolver):
         **kwargs : dict
             options dictionary.
         """
-        super(LinearSolver, self).__init__(**kwargs)
+        super(DirectSolver, self).__init__(**kwargs)
 
         self.time_assemble = 0.0
         self.time_lu_fact = 0.0
