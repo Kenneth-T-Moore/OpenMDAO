@@ -4,10 +4,10 @@ Helper class for total jacobian computation.
 from __future__ import print_function, division
 
 import warnings
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from copy import deepcopy
 import pprint
-from six import iteritems
+from six import iteritems, itervalues
 from six.moves import zip
 import sys
 from time import time
@@ -24,6 +24,7 @@ from openmdao.vectors.vector import INT_DTYPE
 from openmdao.recorders.recording_iteration_stack import recording_iteration
 from openmdao.utils.general_utils import ContainsAll
 from openmdao.utils.record_util import create_local_meta
+from openmdao.utils.mpi import MPI
 
 
 _contains_all = ContainsAll()
@@ -74,8 +75,6 @@ class _TotalJacInfo(object):
         Map of absolute var name to the MPI process that owns it.
     par_deriv : dict
         Cache containing names of desvars or responses for each parallel derivative color.
-    relevant : dict
-        Map of absolute var name to vars that are relevant to it.
     return_format : str
         Indicates the desired return format of the total jacobian. Can have value of
         'array', 'dict', or 'flat_dict'.
@@ -114,7 +113,6 @@ class _TotalJacInfo(object):
 
         self.model = model = problem.model
         self.comm = problem.comm
-        self.relevant = model._relevant
         self.mode = problem._mode
         self.owning_ranks = problem.model._owning_rank
         self.has_scaling = driver._has_scaling and driver_scaling
@@ -190,6 +188,9 @@ class _TotalJacInfo(object):
             if self.simul_coloring is None:
                 modes = [self.mode]
             else:
+                # for now, raise an exception when MPI is used with simul_coloring
+                if MPI:
+                    raise RuntimeError("simul coloring currently does not work under MPI.")
                 modes = [m for m in ('fwd', 'rev') if m in self.simul_coloring]
 
             self.in_idx_map = {}
@@ -232,79 +233,11 @@ class _TotalJacInfo(object):
             self.jac_scatters = {}
             self.jac_petsc = {}
             self.soln_petsc = {}
-            rank = self.comm.rank
             if 'fwd' in modes:
-                self.jac_scatters['fwd'] = jac_scatters = {}
-                if PETSc is not None and (isinstance(self.output_vec['fwd']['linear'], PETScVector)
-                                          or has_remote_vars['fwd']):
-                    tgt_vec = PETSc.Vec().createWithArray(np.zeros(J.shape[0], dtype=float),
-                                                          comm=self.comm)
-                    self.jac_petsc['fwd'] = tgt_vec
-                    self.soln_petsc['fwd'] = {}
-                    sol_idxs, jac_idxs = self.solvec_map['fwd']
-                    for vecname in model._lin_vec_names:
-                        src_arr = self.output_vec['fwd'][vecname]._data
-                        if isinstance(self.output_vec['fwd'][vecname], PETScVector):
-                            src_vec = self.output_vec['fwd'][vecname]._petsc
-                        else:
-                            outvec = self.output_vec['fwd'][vecname]
-                            if outvec._ncol == 1:
-                                src_vec = PETSc.Vec().createWithArray(src_arr, comm=self.comm)
-                            else:
-                                src_vec = PETSc.Vec().createWithArray(
-                                    self.output_vec['fwd'][vecname]._data[:, 0].copy(),
-                                    comm=self.comm)
-                        self.soln_petsc['fwd'][vecname] = (src_vec, src_arr)
-
-                        offset = J.shape[0] * rank
-                        jac_inds = jac_idxs[vecname]
-                        if isinstance(jac_idxs[vecname], slice):
-                            jac_inds = np.arange(offset, offset + J.shape[0], dtype=INT_DTYPE)
-                        else:
-                            jac_inds += offset
-                        src_indexset = PETSc.IS().createGeneral(sol_idxs[vecname], comm=self.comm)
-                        tgt_indexset = PETSc.IS().createGeneral(jac_inds, comm=self.comm)
-                        jac_scatters[vecname] = PETSc.Scatter().create(src_vec, src_indexset,
-                                                                       tgt_vec, tgt_indexset)
-                else:
-                    for vecname in model._lin_vec_names:
-                        jac_scatters[vecname] = None
+                self._compute_jac_scatters('fwd', J.shape[0], has_remote_vars)
 
             if 'rev' in modes:
-                self.jac_scatters['rev'] = jac_scatters = {}
-                if PETSc is not None and (isinstance(self.output_vec['rev']['linear'], PETScVector)
-                                          or has_remote_vars['rev']):
-                    tgt_vec = PETSc.Vec().createWithArray(np.zeros(J.shape[1], dtype=float),
-                                                          comm=self.comm)
-                    self.jac_petsc['rev'] = tgt_vec
-                    self.soln_petsc['rev'] = {}
-                    sol_idxs, jac_idxs = self.solvec_map['rev']
-                    for vecname in model._lin_vec_names:
-                        src_arr = self.output_vec['rev'][vecname]._data
-                        if isinstance(self.output_vec['rev'][vecname], PETScVector):
-                            src_vec = self.output_vec['rev'][vecname]._petsc
-                        else:
-                            outvec = self.output_vec['rev'][vecname]
-                            if outvec._ncol == 1:
-                                src_vec = PETSc.Vec().createWithArray(src_arr, comm=self.comm)
-                            else:
-                                src_vec = PETSc.Vec().createWithArray(
-                                    self.output_vec['rev'][vecname]._data[:, 0].copy(),
-                                    comm=self.comm)
-                        self.soln_petsc['rev'][vecname] = (src_vec, src_arr)
-                        offset = J.shape[1] * rank
-                        jac_inds = jac_idxs[vecname]
-                        if isinstance(jac_idxs[vecname], slice):
-                            jac_inds = np.arange(offset, offset + J.shape[1], dtype=INT_DTYPE)
-                        else:
-                            jac_inds += offset
-                        src_indexset = PETSc.IS().createGeneral(sol_idxs[vecname], comm=self.comm)
-                        tgt_indexset = PETSc.IS().createGeneral(jac_inds, comm=self.comm)
-                        jac_scatters[vecname] = PETSc.Scatter().create(src_vec, src_indexset,
-                                                                       tgt_vec, tgt_indexset)
-                else:
-                    for vecname in model._lin_vec_names:
-                        jac_scatters[vecname] = None
+                self._compute_jac_scatters('rev', J.shape[1], has_remote_vars)
 
         # for dict type return formats, map var names to views of the Jacobian array.
         if return_format == 'array':
@@ -324,6 +257,44 @@ class _TotalJacInfo(object):
         if self.has_scaling:
             self.prom_design_vars = {prom_wrt[i]: design_vars[dv] for i, dv in enumerate(wrt)}
             self.prom_responses = {prom_of[i]: responses[r] for i, r in enumerate(of)}
+
+    def _compute_jac_scatters(self, mode, size, has_remote_vars):
+        rank = self.comm.rank
+        self.jac_scatters[mode] = jac_scatters = {}
+        if PETSc is not None and (isinstance(self.output_vec[mode]['linear'], PETScVector)
+                                  or has_remote_vars[mode]):
+            tgt_vec = PETSc.Vec().createWithArray(np.zeros(size, dtype=float),
+                                                  comm=self.comm)
+            self.jac_petsc[mode] = tgt_vec
+            self.soln_petsc[mode] = {}
+            sol_idxs, jac_idxs = self.solvec_map[mode]
+            for vecname in self.model._lin_vec_names:
+                src_arr = self.output_vec[mode][vecname]._data
+                if isinstance(self.output_vec[mode][vecname], PETScVector):
+                    src_vec = self.output_vec[mode][vecname]._petsc
+                else:
+                    outvec = self.output_vec[mode][vecname]
+                    if outvec._ncol == 1:
+                        src_vec = PETSc.Vec().createWithArray(src_arr, comm=self.comm)
+                    else:
+                        src_vec = PETSc.Vec().createWithArray(
+                            self.output_vec[mode][vecname]._data[:, 0].copy(),
+                            comm=self.comm)
+                self.soln_petsc[mode][vecname] = (src_vec, src_arr)
+
+                offset = size * rank
+                jac_inds = jac_idxs[vecname]
+                if isinstance(jac_idxs[vecname], slice):
+                    jac_inds = np.arange(offset, offset + size, dtype=INT_DTYPE)
+                else:
+                    jac_inds += offset
+                src_indexset = PETSc.IS().createGeneral(sol_idxs[vecname], comm=self.comm)
+                tgt_indexset = PETSc.IS().createGeneral(jac_inds, comm=self.comm)
+                jac_scatters[vecname] = PETSc.Scatter().create(src_vec, src_indexset,
+                                                               tgt_vec, tgt_indexset)
+        else:
+            for vecname in self.model._lin_vec_names:
+                jac_scatters[vecname] = None
 
     def _initialize_approx(self):
         """
@@ -423,10 +394,11 @@ class _TotalJacInfo(object):
         """
         iproc = self.comm.rank
         owning_ranks = self.owning_ranks
-        relevant = self.relevant
+        relevant = self.model._relevant
         has_par_deriv_color = False
         abs2meta = self.model._var_allprocs_abs2meta
         var_sizes = self.model._var_sizes
+        var_offsets = self.model._var_offsets
         abs2idx = self.model._var_allprocs_abs2idx
         idx_iter_dict = OrderedDict()  # a dict of index iterators
 
@@ -481,6 +453,7 @@ class _TotalJacInfo(object):
 
             in_var_idx = abs2idx[rhsname][name]
             sizes = var_sizes[rhsname]['output']
+            offsets = var_offsets[rhsname]['output']
             gstart = np.sum(sizes[:iproc, in_var_idx])
             gend = gstart + sizes[iproc, in_var_idx]
 
@@ -491,8 +464,7 @@ class _TotalJacInfo(object):
                 if owner == iproc:
                     irange += gstart
                 else:
-                    owner_start = np.sum(sizes[:owner, in_var_idx])
-                    irange += owner_start
+                    irange += np.sum(sizes[:owner, in_var_idx])
 
             # all local idxs that correspond to vars from other procs will be -1
             # so each entry of loc_i will either contain a valid local index,
@@ -512,6 +484,9 @@ class _TotalJacInfo(object):
                     if not in_var_meta['distributed']:
                         loc_i[loc] -= gstart
 
+                loc_offset = offsets[iproc, in_var_idx] - offsets[iproc, 0]
+                loc_i[loc] += loc_offset
+
             loc_idxs.append(loc_i)
 
             if parallel_deriv_color:
@@ -521,32 +496,36 @@ class _TotalJacInfo(object):
                         it = self.par_deriv_matmat_iter
                     else:
                         it = self.par_deriv_iter
-                    idx_iter_dict[parallel_deriv_color] = (parallel_deriv_color, matmat,
-                                                           [(start, end)], it)
+                    imeta = defaultdict(bool)
+                    imeta["par_deriv_color"] = parallel_deriv_color
+                    imeta["matmat"] = matmat
+                    imeta["idx_list"] = [(start, end)]
+                    idx_iter_dict[parallel_deriv_color] = (imeta, it)
                 else:
-                    _, old_matmat, range_list, _ = idx_iter_dict[parallel_deriv_color]
-                    if old_matmat != matmat:
+                    imeta, _ = idx_iter_dict[parallel_deriv_color]
+                    if imeta['matmat'] != matmat:
                         raise RuntimeError("Mixing of vectorized and non-vectorized derivs in "
                                            "the same parallel color group (%s) is not "
                                            "supported." % parallel_deriv_color)
-                    range_list.append((start, end))
+                    imeta['idx_list'].append((start, end))
             elif matmat:
                 if name not in idx_iter_dict:
-                    idx_iter_dict[name] = (None, matmat,
-                                           [np.arange(start, end, dtype=int)],
-                                           self.matmat_iter)
+                    imeta = defaultdict(bool)
+                    imeta["matmat"] = matmat
+                    imeta["idx_list"] = [np.arange(start, end, dtype=int)]
+                    idx_iter_dict[name] = (imeta, self.matmat_iter)
                 else:
                     raise RuntimeError("Variable name '%s' matches a parallel_deriv_color "
                                        "name." % name)
             elif not simul_coloring:  # plain old single index iteration
-                idx_iter_dict[name] = (None, False,
-                                       np.arange(start, end, dtype=int),
-                                       self.single_index_iter)
+                imeta = defaultdict(bool)
+                imeta["idx_list"] = np.arange(start, end, dtype=int)
+                idx_iter_dict[name] = (imeta, self.single_index_iter)
 
             if name in relevant:
-                tup = (name, rhsname, relevant[name]['@all'][1], cache_lin_sol)
+                tup = (rhsname, relevant[name]['@all'][1], cache_lin_sol)
             else:
-                tup = (name, rhsname, _contains_all, cache_lin_sol)
+                tup = (rhsname, _contains_all, cache_lin_sol)
 
             idx_map.extend([tup] * (end - start))
             start = end
@@ -554,11 +533,34 @@ class _TotalJacInfo(object):
         if has_par_deriv_color:
             _fix_pdc_lengths(idx_iter_dict)
 
-        if simul_coloring:
-            idx_iter_dict['@simul_coloring'] = (False, False, self.simul_coloring,
-                                                self.simul_coloring_iter)
+        loc_idxs = np.hstack(loc_idxs)
 
-        return idx_map, np.hstack(loc_idxs), idx_iter_dict
+        if simul_coloring and mode in simul_coloring:
+            imeta = defaultdict(bool)
+            imeta["coloring"] = simul_coloring
+            all_rel_systems = set()
+            cache = False
+            imeta['itermeta'] = itermeta = []
+            locs = None
+            for color, ilist in enumerate(simul_coloring[mode][0]):
+                for i in ilist:
+                    _, rel_systems, cache_lin_sol = idx_map[i]
+                    _update_rel_systems(all_rel_systems, rel_systems)
+                    cache |= cache_lin_sol
+
+                iterdict = defaultdict(bool)
+
+                if color != 0:
+                    locs = loc_idxs[ilist]
+                    iterdict['local_in_idxs'] = locs[locs != -1.0]
+
+                iterdict['relevant'] = all_rel_systems
+                iterdict['cache_lin_solve'] = cache
+                itermeta.append(iterdict)
+
+            idx_iter_dict['@simul_coloring'] = (imeta, self.simul_coloring_iter)
+
+        return idx_map, loc_idxs, idx_iter_dict
 
     def _get_solvec_map(self, names, vois, abs2meta, mode):
         """
@@ -590,6 +592,7 @@ class _TotalJacInfo(object):
         owners = model._owning_rank
         fwd = mode == 'fwd'
         missing = False
+        full_slice = slice(None)
 
         for vecname in self.model._lin_vec_names:
             inds = []
@@ -620,7 +623,6 @@ class _TotalJacInfo(object):
                         else:
                             iproc = owners[name]
 
-                        # print("name", name, "myproc", myproc, "owner", owners[name])
                         offset = offsets[iproc, var_idx]
                         idx_array = np.arange(offset, offset + sizes[iproc, var_idx],
                                               dtype=INT_DTYPE)
@@ -643,11 +645,12 @@ class _TotalJacInfo(object):
                 start = end
 
             idxs[vecname] = np.hstack(inds)
+
             if missing:
                 jac_idxs[vecname] = np.hstack([np.arange(start, end, dtype=INT_DTYPE)
                                                for start, end in jac_inds])
             else:
-                jac_idxs[vecname] = slice(None)
+                jac_idxs[vecname] = full_slice
 
         return idxs, jac_idxs
 
@@ -696,14 +699,16 @@ class _TotalJacInfo(object):
     #
     # outer loop iteration functions
     #
-    def single_index_iter(self, idxs):
+    def single_index_iter(self, imeta, mode):
         """
         Iterate over single indices for a single variable.
 
         Parameters
         ----------
-        idxs : iter of int
-            Total jacobian row/column indices.
+        imeta : dict
+            Dictionary of iteration metadata.
+        mode : str
+            Direction of derivative solution.
 
         Yields
         ------
@@ -714,17 +719,19 @@ class _TotalJacInfo(object):
         method
             Jac setter method.
         """
-        for i in idxs:
-            yield i, self.single_input_setter, self.single_jac_setter, self.mode
+        for i in imeta['idx_list']:
+            yield i, self.single_input_setter, self.single_jac_setter, None
 
-    def simul_coloring_iter(self, coloring_info):
+    def simul_coloring_iter(self, imeta, mode):
         """
         Iterate over index lists for the simul coloring case.
 
         Parameters
         ----------
-        coloring_info : tuple of the form (column_or_row_lists, row_or_column_map, sparsity)
-            Row/column data needed to group colors and associate rows and columns.
+        imeta : dict
+            Dictionary of iteration metadata.
+        mode : str
+            Direction of derivative solution.
 
         Yields
         ------
@@ -735,32 +742,35 @@ class _TotalJacInfo(object):
         method
             Jac setter method.
         """
-        modes = [k for k in ('fwd', 'rev') if k in coloring_info]
+        coloring_info = imeta['coloring']
+        both = 'fwd' in coloring_info and 'rev' in coloring_info
         input_setter = self.simul_coloring_input_setter
         jac_setter = self.simul_coloring_jac_setter
 
-        for mode in modes:
-            for color, ilist in enumerate(coloring_info[mode][0]):
-                if color == 0:
-                    # do all uncolored indices individually (one linear solve per index)
-                    if len(modes) == 1:
-                        for i in ilist:
-                            yield i, self.single_input_setter, self.single_jac_setter, mode
-                    else:
-                        for i in ilist:
-                            yield [i], input_setter, jac_setter, mode
+        # for mode in modes:
+        for color, ilist in enumerate(coloring_info[mode][0]):
+            if color == 0:
+                # do all uncolored indices individually (one linear solve per index)
+                if both:
+                    for i in ilist:
+                        yield [i], input_setter, jac_setter, None
                 else:
-                    # yield all indices for a color at once
-                    yield ilist, input_setter, jac_setter, mode
+                    for i in ilist:
+                        yield i, self.single_input_setter, self.single_jac_setter, None
+            else:
+                # yield all indices for a color at once
+                yield ilist, input_setter, jac_setter, imeta['itermeta'][color]
 
-    def par_deriv_iter(self, idxs):
+    def par_deriv_iter(self, imeta, mode):
         """
         Iterate over index lists for the parallel deriv case.
 
         Parameters
         ----------
-        idxs : iter of int
-            Total jacobian row/column indices.
+        imeta : dict
+            Dictionary of iteration metadata.
+        mode : str
+            Direction of derivative solution.
 
         Yields
         ------
@@ -771,17 +781,20 @@ class _TotalJacInfo(object):
         method
             Jac setter method.
         """
+        idxs = imeta['idx_list']
         for tup in zip(*idxs):
-            yield tup, self.par_deriv_input_setter, self.par_deriv_jac_setter, self.mode
+            yield tup, self.par_deriv_input_setter, self.par_deriv_jac_setter, None
 
-    def matmat_iter(self, idxs):
+    def matmat_iter(self, imeta, mode):
         """
         Iterate over index lists for the matrix matrix case.
 
         Parameters
         ----------
-        idxs : ndarray of int
-            Total jacobian row/column indices.
+        imeta : dict
+            Dictionary of iteration metadata.
+        mode : str
+            Direction of derivative solution.
 
         Yields
         ------
@@ -792,17 +805,19 @@ class _TotalJacInfo(object):
         method
             Jac setter method.
         """
-        for idx_list in idxs:
-            yield idx_list, self.matmat_input_setter, self.matmat_jac_setter, self.mode
+        for idx_list in imeta['idx_list']:
+            yield idx_list, self.matmat_input_setter, self.matmat_jac_setter, None
 
-    def par_deriv_matmat_iter(self, idxs):
+    def par_deriv_matmat_iter(self, imeta, mode):
         """
         Iterate over index lists for the combined parallel deriv matrix matrix case.
 
         Parameters
         ----------
-        idxs : iter of int
-            Total jacobian row/column indices.
+        imeta : dict
+            Dictionary of iteration metadata.
+        mode : str
+            Direction of derivative solution.
 
         Yields
         ------
@@ -816,19 +831,22 @@ class _TotalJacInfo(object):
         # here, idxs is a list of arrays.  One array in the list for each parallel deriv
         # variable, and the entries in each array are all of the indices corresponding
         # to that variable's rows or columns in the total jacobian.
-        yield idxs, self.par_deriv_matmat_input_setter, self.par_deriv_matmat_jac_setter, self.mode
+        idxs = imeta['idx_list']
+        yield idxs, self.par_deriv_matmat_input_setter, self.par_deriv_matmat_jac_setter, None
 
     #
     # input setter functions
     #
-    def single_input_setter(self, idx, mode):
+    def single_input_setter(self, idx, imeta, mode):
         """
-        Set 1's into the input vector in the single index case.
+        Set -1's into the input vector in the single index case.
 
         Parameters
         ----------
         idx : int
             Total jacobian row or column index.
+        imeta : dict
+            Dictionary of iteration metadata.
         mode : str
             Direction of derivative solution.
 
@@ -841,27 +859,29 @@ class _TotalJacInfo(object):
         int or None
             key used for storage of cached linear solve (if active, else None).
         """
-        input_name, vecname, rel_systems, cache_lin_sol = self.in_idx_map[mode][idx]
+        vecname, rel_systems, cache_lin_sol = self.in_idx_map[mode][idx]
 
         loc_idx = self.in_loc_idxs[mode][idx]
-        if loc_idx != -1:
+        if loc_idx >= 0:
             # We apply a -1 here because the derivative of the output is minus the derivative of
             # the residual in openmdao.
-            self.input_vec[mode][vecname]._views_flat[input_name][loc_idx] = -1.0
+            self.input_vec[mode][vecname]._data[loc_idx] = -1.0
 
         if cache_lin_sol:
             return rel_systems, (vecname,), (idx, mode)
         else:
             return rel_systems, None, None
 
-    def simul_coloring_input_setter(self, inds, mode):
+    def simul_coloring_input_setter(self, inds, itermeta, mode):
         """
-        Set 1's into the input vector in the simul coloring case.
+        Set -1's into the input vector in the simul coloring case.
 
         Parameters
         ----------
         inds : list of int
             Total jacobian row or column indices.
+        itermeta : dict
+            Dictionary of iteration metadata.
         mode : str
             Direction of derivative solution.
 
@@ -874,27 +894,28 @@ class _TotalJacInfo(object):
         int or None
             key used for storage of cached linear solve (if active, else None).
         """
-        all_rel_systems = set()
-        cache = False
+        if itermeta is None:
+            return self.single_input_setter(inds[0], None, mode)
 
-        for i in inds:
-            rel_systems, vec_names, _ = self.single_input_setter(i, mode)
-            _update_rel_systems(all_rel_systems, rel_systems)
-            cache |= vec_names is not None
+        # We apply a -1 here because the derivative of the output is minus the derivative of
+        # the residual in openmdao.
+        self.input_vec[mode]['linear']._data[itermeta['local_in_idxs']] = -1.0
 
-        if cache:
-            return all_rel_systems, ('linear',), (inds[0], mode)
+        if itermeta['cache_lin_solve']:
+            return itermeta['relevant'], ('linear',), (inds[0], mode)
         else:
-            return all_rel_systems, None, None
+            return itermeta['relevant'], None, None
 
-    def par_deriv_input_setter(self, inds, mode):
+    def par_deriv_input_setter(self, inds, imeta, mode):
         """
-        Set 1's into the input vector in the parallel derivative case.
+        Set -1's into the input vector in the parallel derivative case.
 
         Parameters
         ----------
         inds : tuple of int
             Total jacobian row or column indices.
+        imeta : dict
+            Dictionary of iteration metadata.
         mode : str
             Direction of derivative solution.
 
@@ -908,27 +929,29 @@ class _TotalJacInfo(object):
             key used for storage of cached linear solve (if active, else None).
         """
         all_rel_systems = set()
-        vec_names = []
+        vec_names = set()
 
         for i in inds:
-            rel_systems, vnames, _ = self.single_input_setter(i, mode)
+            rel_systems, vnames, _ = self.single_input_setter(i, imeta, mode)
             _update_rel_systems(all_rel_systems, rel_systems)
             if vnames is not None:
-                vec_names.append(vnames[0])
+                vec_names.add(vnames[0])
 
         if vec_names:
-            return all_rel_systems, vec_names, (inds[0], mode)
+            return all_rel_systems, sorted(vec_names), (inds[0], mode)
         else:
             return all_rel_systems, None, None
 
-    def matmat_input_setter(self, inds, mode):
+    def matmat_input_setter(self, inds, imeta, mode):
         """
-        Set 1's into the input vector in the matrix-matrix case.
+        Set -1's into the input vector in the matrix-matrix case.
 
         Parameters
         ----------
         inds : ndarray of int
             Total jacobian row or column indices.
+        imeta : dict
+            Dictionary of iteration metadata.
         mode : str
             Direction of derivative solution.
 
@@ -945,31 +968,32 @@ class _TotalJacInfo(object):
         in_idx_map = self.in_idx_map[mode]
         in_loc_idxs = self.in_loc_idxs[mode]
 
-        input_name, vec_name, rel_systems, cache_lin_sol = in_idx_map[inds[0]]
+        vec_name, rel_systems, cache_lin_sol = in_idx_map[inds[0]]
 
         dinputs = input_vec[vec_name]
 
         for col, i in enumerate(inds):
             loc_idx = in_loc_idxs[i]
             if loc_idx != -1:
-
                 # We apply a -1 here because the derivative of the output is minus the derivative
                 # of the residual in openmdao.
-                dinputs._views_flat[input_name][loc_idx, col] = -1.0
+                dinputs._data[loc_idx, col] = -1.0
 
         if cache_lin_sol:
             return rel_systems, (vec_name,), (inds[0], mode)
         else:
             return rel_systems, None, None
 
-    def par_deriv_matmat_input_setter(self, inds, mode):
+    def par_deriv_matmat_input_setter(self, inds, imeta, mode):
         """
-        Set 1's into the input vector in the matrix matrix with parallel deriv case.
+        Set -1's into the input vector in the matrix matrix with parallel deriv case.
 
         Parameters
         ----------
         inds : list of ndarray of int
             Total jacobian row or column indices.
+        imeta : dict
+            Dictionary of iteration metadata.
         mode : str
             Direction of derivative solution.
 
@@ -989,11 +1013,11 @@ class _TotalJacInfo(object):
         all_rel_systems = set()
         cache = False
 
-        vec_names = []
+        vec_names = set()
         for matmat_idxs in inds:
-            input_name, vec_name, rel_systems, cache_lin_sol = in_idx_map[matmat_idxs[0]]
+            vec_name, rel_systems, cache_lin_sol = in_idx_map[matmat_idxs[0]]
             if cache_lin_sol:
-                vec_names.append(vec_name)
+                vec_names.add(vec_name)
             cache |= cache_lin_sol
             _update_rel_systems(all_rel_systems, rel_systems)
 
@@ -1007,12 +1031,12 @@ class _TotalJacInfo(object):
                     # We apply a -1 here because the derivative of the output is minus the
                     # derivative of the residual in openmdao.
                     if ncol > 1:
-                        dinputs._views_flat[input_name][loc_idx, col] = -1.0
+                        dinputs._data[loc_idx, col] = -1.0
                     else:
-                        dinputs._views_flat[input_name][loc_idx] = -1.0
+                        dinputs._data[loc_idx] = -1.0
 
         if cache:
-            return all_rel_systems, vec_names, (inds[0][0], mode)
+            return all_rel_systems, sorted(vec_names), (inds[0][0], mode)
         else:
             return all_rel_systems, None, None
 
@@ -1030,7 +1054,7 @@ class _TotalJacInfo(object):
         mode : str
             Direction of derivative solution.
         """
-        _, vecname, _, _ = self.in_idx_map[mode][i]
+        vecname, _, _ = self.in_idx_map[mode][i]
         deriv_idxs, jac_idxs = self.solvec_map[mode]
 
         scatter = self.jac_scatters[mode][vecname]
@@ -1086,6 +1110,8 @@ class _TotalJacInfo(object):
         deriv_val = self.output_vec[mode]['linear']._data
         reduced_derivs = deriv_val[deriv_idxs['linear']]
 
+        # TODO: add code here to handle running under MPI
+
         if fwd:
             for i in inds:
                 J[row_col_map[i], i] = reduced_derivs[row_col_map[i]]
@@ -1106,9 +1132,8 @@ class _TotalJacInfo(object):
         """
         # in plain matmat, all inds are for a single variable for each iteration of the outer loop,
         # so any relevance can be determined only once.
-        _, vecname, _, _ = self.in_idx_map[mode][inds[0]]
+        vecname, _, _ = self.in_idx_map[mode][inds[0]]
         ncol = self.output_vec[mode][vecname]._ncol
-        relevant = self.relevant
         nproc = self.comm.size
         fwd = self.mode == 'fwd'
         J = self.J
@@ -1119,12 +1144,13 @@ class _TotalJacInfo(object):
         scatter = self.jac_scatters[mode][vecname]
         jac_inds = jac_idxs[vecname]
         if scatter is None:
+            deriv_val = deriv_val[deriv_idxs[vecname], :]
             if mode == 'fwd':
                 for col, i in enumerate(inds):
-                    self.J[jac_inds, i] = deriv_val[deriv_idxs[vecname], col]
+                    self.J[jac_inds, i] = deriv_val[:, col]
             else:  # rev
                 for col, i in enumerate(inds):
-                    self.J[i, jac_inds] = deriv_val[deriv_idxs[vecname], col]
+                    self.J[i, jac_inds] = deriv_val[:, col]
         else:
             solution = self.soln_petsc[mode][vecname]
             for col, i in enumerate(inds):
@@ -1189,10 +1215,11 @@ class _TotalJacInfo(object):
         self.time_lienarize_solver += time() - t0
 
         t0 = time()
-        for iter_mode in self.idx_iter_dict:
-            for key, meta in iteritems(self.idx_iter_dict[iter_mode]):
-                _, _, idx_info, idx_iter = meta
-                for inds, input_setter, jac_setter, mode in idx_iter(idx_info):
+        # Main loop over columns (fwd) or rows (rev) of the jacobian
+        for mode in self.idx_iter_dict:
+            for key, idx_info in iteritems(self.idx_iter_dict[mode]):
+                imeta, idx_iter = idx_info
+                for inds, input_setter, jac_setter, itermeta in idx_iter(imeta, mode):
                     # this sets dinputs for the current par_deriv_color to 0
                     # dinputs is dresids in fwd, doutouts in rev
                     vec_doutput['linear']._data[:] = 0.0
@@ -1201,7 +1228,7 @@ class _TotalJacInfo(object):
                     else:  # rev
                         vec_dinput['linear']._data[:] = 0.0
 
-                    rel_systems, vec_names, cache_key = input_setter(inds, mode)
+                    rel_systems, vec_names, cache_key = input_setter(inds, itermeta, mode)
 
                     if debug_print:
                         if par_deriv and key in par_deriv:
@@ -1524,8 +1551,10 @@ def _fix_pdc_lengths(idx_iter_dict):
     idx_iter_dict : dict
         Dict of a name/color mapped to indexing information.
     """
-    for key, tup in iteritems(idx_iter_dict):
-        par_deriv_color, matmat, range_list, _ = tup
+    for imeta, _ in itervalues(idx_iter_dict):
+        par_deriv_color = imeta['par_deriv_color']
+        matmat = imeta['matmat']
+        range_list = imeta['idx_list']
         if par_deriv_color:
             if not matmat:
                 lens = np.array([end - start for start, end in range_list])
