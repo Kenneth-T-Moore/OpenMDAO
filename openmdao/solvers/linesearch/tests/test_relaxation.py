@@ -239,6 +239,8 @@ class TestFeatureRelaxationLS(unittest.TestCase):
 
         plt.figure(1)
         plt.plot(xx, yy)
+        plt.plot(xx[0], yy[0], '*')
+        plt.plot(dxx[1], dyy[1], '*')
         plt.plot([19.68734033], [0.], 'r*')
         plt.plot([-19.68734033 + 40.0], [0.], 'r*')
         plt.plot(dxx, dyy, 'r--')
@@ -247,6 +249,7 @@ class TestFeatureRelaxationLS(unittest.TestCase):
         plt.title("Newton without relaxation")
         plt.text(40, 1150, "First Newton step.")
         plt.text(15, 0, "Roots.")
+        plt.text(12, 2250, "Start")
         plt.grid()
         plt.show()
         print('')
