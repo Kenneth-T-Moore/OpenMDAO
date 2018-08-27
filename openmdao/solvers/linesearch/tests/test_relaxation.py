@@ -162,6 +162,9 @@ class TestRelaxationLS(unittest.TestCase):
 
 class TestFeatureRelaxationLS(unittest.TestCase):
 
+    def setUp(self):
+        matplotlib.use('Agg')
+
     def test_atan(self):
         from math import atan
 
