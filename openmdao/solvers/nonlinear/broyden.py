@@ -305,6 +305,8 @@ class BroydenSolver(NonlinearSolver):
         norm = self._iter_get_norm()
 
         norm0 = norm if norm != 0.0 else 1.0
+        if self.linesearch:
+            self.linesearch._global_norm0 = norm0
         return norm0, norm
 
     def _iter_get_norm(self):

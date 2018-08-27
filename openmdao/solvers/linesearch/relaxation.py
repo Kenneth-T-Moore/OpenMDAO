@@ -76,6 +76,9 @@ class RelaxationLS(LineSearch):
         opt.declare('relax_near', default=1e-3,
                     desc='Value of absolute residual norm below which no relaxation is used. '
                     '(i.e., relaxation parameter = 1.0')
+        opt.declare('abs_or_rel_norm', default='rel', values=['abs', 'rel'],
+                    desc='Whether to use absolute or relative norm for determining where'
+                    'relaxation occurs.')
 
         # Remove unused options from base options here, so that users
         # attempting to set them will get KeyErrors.
@@ -124,10 +127,15 @@ class RelaxationLS(LineSearch):
 
         self._run_apply()
 
-        norm0 = self._iter_get_norm()
-        if norm0 == 0.0:
-            norm0 = 1.0
-        self._norm0 = norm0
+        norm = self._iter_get_norm()
+        norm_global_base = self._global_norm0
+        self._norm0 = norm_global_base
+
+        # Abs or rel norm.
+        if self.options['abs_or_rel_norm'] == 'abs':
+            norm0 = norm
+        else:
+            norm0 = norm_global_base
 
         relax_far = self.options['relax_far']
         relax_near = self.options['relax_near']
@@ -164,9 +172,9 @@ class RelaxationLS(LineSearch):
             # be wrapped in the with for stack purposes,
             # so we locally assign  norm & norm0 into the class.
             rec.abs = norm
-            rec.rel = norm / norm0
+            rec.rel = norm / norm_global_base
 
-        self._mpi_print(self._iter_count, norm, norm / norm0)
+        self._mpi_print(self._iter_count, norm, norm / norm_global_base)
 
         fail = (np.isinf(norm) or np.isnan(norm))
-        return fail, norm, norm / norm0
+        return fail, norm, norm / norm_global_base

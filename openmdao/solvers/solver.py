@@ -892,6 +892,8 @@ class LineSearch(NonlinearSolver):
     _do_subsolve : bool
         Flag used by parent solver to tell the line search whether to solve subsystems while
         backtracking.
+    _global_norm0 : float
+        Initial value of the norm of the residual in the parent solver.
     """
 
     def __init__(self, **kwargs):
@@ -907,3 +909,5 @@ class LineSearch(NonlinearSolver):
 
         # Parent solver sets this to control whether to solve subsystems.
         self._do_subsolve = False
+
+        self._global_norm0 = 0.0
