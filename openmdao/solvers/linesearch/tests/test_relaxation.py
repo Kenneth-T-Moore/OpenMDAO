@@ -212,7 +212,7 @@ class TestFeatureRelaxationLS(unittest.TestCase):
         newton.options['maxiter'] = 75
         newton.options['solve_subsystems'] = True
 
-        # Tailored the relaxation settings to give good convergence.
+        # Without the RelaxationLS, Newton cannot solve this.
         newton.linesearch = RelaxationLS()
         newton.linesearch.options['initial_relaxation'] = 0.3
         newton.linesearch.options['relax_far'] = 1.0e-1
