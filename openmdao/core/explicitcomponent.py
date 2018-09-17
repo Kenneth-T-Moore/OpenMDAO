@@ -7,6 +7,7 @@ from six import itervalues, iteritems
 from six.moves import range
 
 from openmdao.core.component import Component
+from openmdao.vectors.vector import Vector
 from openmdao.utils.class_util import overrides_method
 from openmdao.recorders.recording_iteration_stack import Recording
 
@@ -162,9 +163,6 @@ class ExplicitComponent(Component):
                         not in self._outputs._views_flat):
                     self._approx_schemes[method].add_approximation(abs_key, meta)
 
-        for approx in itervalues(self._approx_schemes):
-            approx._init_approximations()
-
     def _apply_nonlinear(self):
         """
         Compute residuals. The model is assumed to be in a scaled state.
@@ -183,11 +181,6 @@ class ExplicitComponent(Component):
                     self.compute(self._inputs, outputs)
                 finally:
                     self._inputs.read_only = False
-
-                # Restore any complex views if under complex step.
-                if outputs._vector_info._under_complex_step:
-                    outputs._remove_complex_views()
-                    residuals._remove_complex_views()
 
                 residuals += outputs
                 outputs -= residuals

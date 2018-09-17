@@ -28,7 +28,7 @@ from openmdao.error_checking.check_config import check_config
 from openmdao.recorders.recording_iteration_stack import recording_iteration
 from openmdao.recorders.recording_manager import RecordingManager
 from openmdao.utils.record_util import create_local_meta, check_path
-from openmdao.utils.general_utils import warn_deprecation, ContainsAll, pad_name
+from openmdao.utils.general_utils import warn_deprecation, ContainsAll, pad_name, simple_warning
 from openmdao.utils.mpi import FakeComm
 from openmdao.utils.mpi import MPI
 from openmdao.utils.name_maps import prom_name2abs_name
@@ -770,6 +770,7 @@ class Problem(object):
             this enables the user to instantiate and setup in one line.
         """
         model = self.model
+        model.force_alloc_complex = force_alloc_complex
         comm = self.comm
 
         if vector_class is not None:
@@ -849,10 +850,10 @@ class Problem(object):
 
         if ((mode == 'fwd' and desvar_size > response_size) or
                 (mode == 'rev' and response_size > desvar_size)):
-            warnings.warn("Inefficient choice of derivative mode.  You chose '%s' for a "
-                          "problem with %d design variables and %d response variables "
-                          "(objectives and nonlinear constraints)." %
-                          (mode, desvar_size, response_size), RuntimeWarning)
+            simple_warning("Inefficient choice of derivative mode.  You chose '%s' for a "
+                           "problem with %d design variables and %d response variables "
+                           "(objectives and nonlinear constraints)." %
+                           (mode, desvar_size, response_size), RuntimeWarning)
 
         self._setup_recording()
 
@@ -873,9 +874,7 @@ class Problem(object):
 
     def check_partials(self, out_stream=_DEFAULT_OUT_STREAM, includes=None, excludes=None,
                        compact_print=False, abs_err_tol=1e-6, rel_err_tol=1e-6,
-                       method='fd', step=DEFAULT_FD_OPTIONS['step'],
-                       form=DEFAULT_FD_OPTIONS['form'],
-                       step_calc=DEFAULT_FD_OPTIONS['step_calc'],
+                       method='fd', step=None, form='forward', step_calc='abs',
                        force_dense=True, show_only_incorrect=False):
         """
         Check partial derivatives comprehensively for all components in your model.
@@ -903,13 +902,14 @@ class Problem(object):
         method : str
             Method, 'fd' for finite difference or 'cs' for complex step. Default is 'fd'.
         step : float
-            Step size for approximation. Default is the default value of step for the 'fd' method.
+            Step size for approximation. Default is None, which means 1e-6 for 'fd' and 1e-40 for
+            'cs'.
         form : string
             Form for finite difference, can be 'forward', 'backward', or 'central'. Default
-            is the default value of step for the 'fd' method.
+            'forward'.
         step_calc : string
-            Step type for finite difference, can be 'abs' for absolute', or 'rel' for
-            relative. Default is the default value of step for the 'fd' method.
+            Step type for finite difference, can be 'abs' for absolute', or 'rel' for relative.
+            Default is 'abs'.
         force_dense : bool
             If True, analytic derivatives will be coerced into arrays. Default is True.
         show_only_incorrect : bool, optional
@@ -1099,7 +1099,7 @@ class Problem(object):
                             # them unless the fd is non zero. Note: subjacs_info is empty for
                             # undeclared partials, which is the default behavior now.
                             try:
-                                if subjacs[abs_key]['dependent'] is False:
+                                if not subjacs[abs_key]['dependent']:
                                     indep_key[c_name].add(rel_key)
                             except KeyError:
                                 indep_key[c_name].add(rel_key)
@@ -1207,9 +1207,7 @@ class Problem(object):
 
             approx_jac = {}
             for approximation in itervalues(approximations):
-                approximation._init_approximations()
-
-                # Peform the FD here.
+                # Perform the FD here.
                 approximation.compute_approximations(comp, jac=approx_jac)
 
             for rel_key, partial in iteritems(approx_jac):
@@ -1228,7 +1226,7 @@ class Problem(object):
             msg += str(list(comps_could_not_cs))
             msg += "\nTo enable complex step, specify 'force_alloc_complex=True' when calling " + \
                    "setup on the problem, e.g. 'problem.setup(force_alloc_complex=True)'"
-            warnings.warn(msg)
+            simple_warning(msg)
 
         _assemble_derivative_data(partials_data, rel_err_tol, abs_err_tol, out_stream,
                                   compact_print, comps, all_fd_options, indep_key=indep_key,
@@ -1239,7 +1237,7 @@ class Problem(object):
 
     def check_totals(self, of=None, wrt=None, out_stream=_DEFAULT_OUT_STREAM, compact_print=False,
                      driver_scaling=False, abs_err_tol=1e-6, rel_err_tol=1e-6,
-                     method='fd', step=1e-6, form='forward', step_calc='abs'):
+                     method='fd', step=None, form='forward', step_calc='abs'):
         """
         Check total derivatives for the model vs. finite difference.
 
@@ -1269,7 +1267,8 @@ class Problem(object):
         method : str
             Method, 'fd' for finite difference or 'cs' for complex step. Default is 'fd'
         step : float
-            Step size for approximation. Default is 1e-6.
+            Step size for approximation. Default is None, which means 1e-6 for 'fd' and 1e-40 for
+            'cs'.
         form : string
             Form for finite difference, can be 'forward', 'backward', or 'central'. Default
             'forward'.
@@ -1300,6 +1299,12 @@ class Problem(object):
                                        driver_scaling=driver_scaling)
             Jcalc = total_info.compute_totals()
 
+            if step is None:
+                if method == 'cs':
+                    step = DEFAULT_CS_OPTIONS['step']
+                else:
+                    step = DEFAULT_FD_OPTIONS['step']
+
             # Approximate FD
             fd_args = {
                 'step': step,
@@ -1325,7 +1330,7 @@ class Problem(object):
         data[''] = {}
         for key, val in iteritems(Jcalc):
             data[''][key] = {}
-            data[''][key]['J_fwd'] = Jcalc[key]
+            data[''][key]['J_fwd'] = val
             data[''][key]['J_fd'] = Jfd[key]
         fd_args['method'] = 'fd'
 
@@ -1660,7 +1665,7 @@ def _assemble_derivative_data(derivative_data, rel_error_tol, abs_error_tol, out
 
         if sys_name not in derivative_data:
             msg = "No derivative data found for %s '%s'." % (sys_type, sys_name)
-            warnings.warn(msg)
+            simple_warning(msg)
             continue
 
         derivatives = derivative_data[sys_name]
@@ -1862,16 +1867,16 @@ def _assemble_derivative_data(derivative_data, rel_error_tol, abs_error_tol, out
 
                     # Magnitudes
                     if out_stream:
-                        out_buffer.write("  {}: '{}' wrt '{}'".format(sys_name, of, wrt) + '\n')
-                        out_buffer.write('    Forward Magnitude : {:.6e}'.format(magnitude.forward)
-                                         + '\n')
+                        out_buffer.write("  {}: '{}' wrt '{}'\n".format(sys_name, of, wrt))
+                        out_buffer.write('    Forward Magnitude : {:.6e}\n'.format(
+                            magnitude.forward))
                     if not totals and system.matrix_free:
                         txt = '    Reverse Magnitude : {:.6e}'
                         if out_stream:
                             out_buffer.write(txt.format(magnitude.reverse) + '\n')
                     if out_stream:
-                        out_buffer.write('         Fd Magnitude : {:.6e} ({})'.format(magnitude.fd,
-                                         fd_desc) + '\n')
+                        out_buffer.write('         Fd Magnitude : {:.6e} ({})\n'.format(
+                            magnitude.fd, fd_desc))
                     # Absolute Errors
                     if totals or not system.matrix_free:
                         error_descs = ('(Jfor  - Jfd) ', )
@@ -1882,8 +1887,7 @@ def _assemble_derivative_data(derivative_data, rel_error_tol, abs_error_tol, out
                         if error_str.endswith('*'):
                             num_bad_jacs += 1
                         if out_stream:
-                            out_buffer.write('    Absolute Error {}: {}'.format(desc, error_str) +
-                                             '\n')
+                            out_buffer.write('    Absolute Error {}: {}\n'.format(desc, error_str))
                     if out_stream:
                         out_buffer.write('\n')
 
@@ -1893,10 +1897,11 @@ def _assemble_derivative_data(derivative_data, rel_error_tol, abs_error_tol, out
                         if error_str.endswith('*'):
                             num_bad_jacs += 1
                         if out_stream:
-                            out_buffer.write('    Relative Error {}: {}'.format(desc, error_str) +
-                                             '\n')
+                            out_buffer.write('    Relative Error {}: {}\n'.format(desc, error_str))
 
                     if out_stream:
+                        if MPI and MPI.COMM_WORLD.size > 1:
+                            out_buffer.write('    MPI Rank {}\n'.format(MPI.COMM_WORLD.rank))
                         out_buffer.write('\n')
 
                     # Raw Derivatives
