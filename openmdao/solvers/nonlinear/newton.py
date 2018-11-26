@@ -2,8 +2,6 @@
 
 from __future__ import print_function
 
-from copy import deepcopy
-
 from openmdao.solvers.solver import NonlinearSolver
 from openmdao.recorders.recording_iteration_stack import Recording, recording_iteration
 from openmdao.utils.general_utils import warn_deprecation

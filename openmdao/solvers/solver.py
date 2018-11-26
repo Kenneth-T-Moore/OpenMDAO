@@ -11,8 +11,6 @@ import sys
 
 import numpy as np
 
-from copy import deepcopy
-
 from openmdao.core.analysis_error import AnalysisError
 from openmdao.jacobians.assembled_jacobian import AssembledJacobian, DenseJacobian, CSCJacobian
 from openmdao.recorders.recording_iteration_stack import Recording, recording_iteration

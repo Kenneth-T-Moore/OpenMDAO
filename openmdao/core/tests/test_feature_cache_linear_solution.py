@@ -2,8 +2,8 @@
 from __future__ import division
 
 import unittest
-from copy import deepcopy
 from six.moves import cStringIO
+
 import numpy as np
 from scipy.sparse.linalg import gmres
 
@@ -12,11 +12,11 @@ from openmdao.api import Problem, Group, ImplicitComponent, IndepVarComp
 from openmdao.utils.assert_utils import assert_rel_error
 
 
-class CacheLinearTestCase(unittest.TestCase): 
+class CacheLinearTestCase(unittest.TestCase):
 
-    def test_feature_cache_linear(self): 
+    def test_feature_cache_linear(self):
 
-        import numpy as np 
+        import numpy as np
         from scipy.sparse.linalg import gmres
 
         from openmdao.api import ImplicitComponent, Group, IndepVarComp, Problem
@@ -72,7 +72,7 @@ class CacheLinearTestCase(unittest.TestCase):
                 self.state_jac = np.array([[2*a*x+b, 0],[0, a]])
 
             def solve_linear(self, d_outputs, d_residuals, mode):
-                
+
                 if mode == 'fwd':
                     print("incoming initial guess", d_outputs['states'])
                     d_outputs['states'] = gmres(self.state_jac, d_residuals['states'], x0=d_outputs['states'])[0]
@@ -106,6 +106,6 @@ class CacheLinearTestCase(unittest.TestCase):
         assert_rel_error(self, derivs['states', 'a'], [[-0.02072594],[4.]], 1e-6)
 
 
-if __name__ == "__main__": 
+if __name__ == "__main__":
     unittest.main()
 
