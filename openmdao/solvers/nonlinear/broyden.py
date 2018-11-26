@@ -276,8 +276,8 @@ class BroydenSolver(NonlinearSolver):
             Initial absolute error in the user-specified residuals.
         """
         if self.options['debug_print']:
-            self._err_cache['inputs'] = deepcopy(self._system._inputs)
-            self._err_cache['outputs'] = deepcopy(self._system._outputs)
+            self._err_cache['inputs'] = self._system._inputs._copy_views()
+            self._err_cache['outputs'] = self._system._outputs._copy_views()
 
         system = self._system
         self._converge_failures = 0
