@@ -2,8 +2,8 @@ import unittest
 
 import numpy as np
 
-from openmdao.api import Problem, ExplicitComponent, Group, IndepVarComp
-from openmdao.jacobians.assembled_jacobian import DenseJacobian
+from openmdao.api import Problem, ExplicitComponent, Group, IndepVarComp, DirectSolver
+from openmdao.jacobians.dictionary_jacobian import DictionaryJacobian
 from openmdao.test_suite.components.double_sellar import DoubleSellar
 from openmdao.test_suite.components.paraboloid import Paraboloid
 from openmdao.test_suite.components.sellar_feature import SellarNoDerivativesCS
@@ -27,7 +27,6 @@ class TestAssertUtils(unittest.TestCase):
                 self.declare_partials(of='*', wrt='*')
 
             def compute(self, inputs, outputs):
-                """ Doesn't do much. """
                 outputs['y'] = 3.0 * inputs['x1'] + 4.0 * inputs['x2']
 
             def compute_partials(self, inputs,     partials):
@@ -43,7 +42,7 @@ class TestAssertUtils(unittest.TestCase):
         prob.setup(check=False)
         prob.run_model()
 
-        data = prob.check_partials(suppress_output=True)
+        data = prob.check_partials(out_stream=None)
         atol = 1.e-6
         rtol = 1.e-6
         assert_check_partials(data, atol, rtol)
@@ -59,7 +58,6 @@ class TestAssertUtils(unittest.TestCase):
                 self.declare_partials(of='*', wrt='*')
 
             def compute(self, inputs, outputs):
-                """ Doesn't do much. """
                 outputs['y'] = 3.0 * inputs['x1'] + 4.0 * inputs['x2']
 
             def compute_partials(self, inputs, partials):
@@ -76,7 +74,7 @@ class TestAssertUtils(unittest.TestCase):
         prob.setup(check=False)
         prob.run_model()
 
-        data = prob.check_partials(suppress_output=True)
+        data = prob.check_partials(out_stream=None)
 
         atol = 1.e-6
         rtol = 1.e-6
@@ -99,6 +97,9 @@ class TestAssertUtils(unittest.TestCase):
             self.fail('Exception expected.')
 
     def test_feature_assert_check_partials_exception_expected(self):
+        import numpy as np
+        from openmdao.api import ExplicitComponent, Problem
+        from openmdao.utils.assert_utils import assert_check_partials
         class MyComp(ExplicitComponent):
             def setup(self):
                 self.add_input('x1', 3.0)
@@ -126,7 +127,7 @@ class TestAssertUtils(unittest.TestCase):
         prob.setup(check=False)
         prob.run_model()
 
-        data = prob.check_partials(suppress_output=True)
+        data = prob.check_partials(out_stream=None)
 
         atol = 1.e-6
         rtol = 1.e-6
@@ -172,22 +173,20 @@ class TestAssertUtils(unittest.TestCase):
         prob.model = SellarNoDerivativesCS()
 
         prob.setup(check=False)
+        prob.model.cycle._jacobian = DictionaryJacobian(prob.model.cycle)
 
         try:
             assert_no_dict_jacobians(prob.model, include_self=True, recurse=True)
 
         except AssertionError as err:
-            expected_err = \
-'''The following groups use dictionary jacobians:
-    
-    cycle'''
+            expected_err = "The following groups use dictionary jacobians:\n\n    cycle"
             self.assertEqual(str(err), expected_err)
         else:
             self.fail('Exception expected.')
 
     def test_assert_no_dict_jacobians_exception_not_expected(self):
 
-        model = Group()
+        model = Group(assembled_jac_type='dense')
         ivc = IndepVarComp()
         ivc.add_output('x', 3.0)
         ivc.add_output('y', -4.0)
@@ -198,7 +197,7 @@ class TestAssertUtils(unittest.TestCase):
         model.connect('des_vars.y', 'parab_comp.y')
 
         prob = Problem(model)
-        prob.model.jacobian = DenseJacobian()
+        prob.model.linear_solver = DirectSolver(assemble_jac=True)
 
         prob.setup(check=False)
 

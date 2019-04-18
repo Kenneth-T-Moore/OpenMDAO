@@ -19,17 +19,19 @@ if MPI:
 else:
     rank = 0
 
+
 class DistribExecComp(ExecComp):
     """
     An ExecComp that uses N procs and takes input var slices.  Unlike a normal
-    ExecComp, if only supports a single expression per proc.  If you give it
+    ExecComp, it only supports a single expression per proc.  If you give it
     multiple expressions, it will use a different one in each proc, repeating
     the last one in any remaining procs.
     """
+
     def __init__(self, exprs, arr_size=11, **kwargs):
         super(DistribExecComp, self).__init__(exprs, **kwargs)
         self.arr_size = arr_size
-        self.distributed = True
+        self.options['distributed'] = True
 
     def setup(self):
         outs = set()
@@ -78,7 +80,8 @@ class DistribExecComp(ExecComp):
 class DistribCoordComp(ExplicitComponent):
     def __init__(self, **kwargs):
         super(DistribCoordComp, self).__init__(**kwargs)
-        self.distributed = True
+
+        self.options['distributed'] = True
 
     def setup(self):
         comm = self.comm
@@ -86,20 +89,20 @@ class DistribCoordComp(ExplicitComponent):
 
         if rank == 0:
             self.add_input('invec', numpy.zeros((5, 3)),
-                           src_indices=[[(0,0), (0,1), (0,2)],
-                                        [(1,0), (1,1), (1,2)],
-                                        [(2,0), (2,1), (2,2)],
-                                        [(3,0), (3,1), (3,2)],
-                                        [(4,0), (4,1), (4,2)]])
+                           src_indices=[[(0, 0), (0, 1), (0, 2)],
+                                        [(1, 0), (1, 1), (1, 2)],
+                                        [(2, 0), (2, 1), (2, 2)],
+                                        [(3, 0), (3, 1), (3, 2)],
+                                        [(4, 0), (4, 1), (4, 2)]])
             self.add_output('outvec', numpy.zeros((5, 3)))
         else:
             self.add_input('invec', numpy.zeros((4, 3)),
-                           src_indices=[[(5,0), (5,1), (5,2)],
-                                        [(6,0), (6,1), (6,2)],
-                                        [(7,0), (7,1), (7,2)],
+                           src_indices=[[(5, 0), (5, 1), (5, 2)],
+                                        [(6, 0), (6, 1), (6, 2)],
+                                        [(7, 0), (7, 1), (7, 2)],
                                         # use some negative indices here to
                                         # make sure they work
-                                        [(-1,0), (8,1), (-1,2)]])
+                                        [(-1, 0), (8, 1), (-1, 2)]])
             self.add_output('outvec', numpy.zeros((4, 3)))
 
     def compute(self, inputs, outputs):
@@ -134,12 +137,12 @@ class MPITests2(unittest.TestCase):
         prob.model.add_subsystem('indep', IndepVarComp('x', points))
         prob.model.add_subsystem('comp', DistribCoordComp())
         prob.model.add_subsystem('total', ExecComp('y=x',
-                                                   x=numpy.zeros((9,3)),
-                                                   y=numpy.zeros((9,3))))
+                                                   x=numpy.zeros((9, 3)),
+                                                   y=numpy.zeros((9, 3))))
         prob.model.connect('indep.x', 'comp.invec')
         prob.model.connect('comp.outvec', 'total.x')
 
-        prob.setup(vector_class=PETScVector, check=False, mode='fwd')
+        prob.setup(check=False, mode='fwd')
         prob.run_model()
 
         final = points.copy()
@@ -171,13 +174,13 @@ class MPITests2(unittest.TestCase):
         prob.model.connect('P.x', 'C1.x')
         prob.model.connect('C1.y', 'C2.y')
 
-        prob.setup(vector_class=PETScVector, check=False, mode='fwd')
+        prob.setup(check=False, mode='fwd')
         prob.run_model()
 
         J = prob.compute_totals(['C2.z'], ['P.x'])
         assert_rel_error(self, J['C2.z', 'P.x'], numpy.diag([6.0, 6.0, 9.0]), 1e-6)
 
-        prob.setup(vector_class=PETScVector, check=False, mode='rev')
+        prob.setup(check=False, mode='rev')
         prob.run_model()
 
         J = prob.compute_totals(['C2.z'], ['P.x'])
@@ -213,7 +216,7 @@ class MPITests2(unittest.TestCase):
         root.connect("C1.y", "sub.C3.x")
         root.connect("P.x", "C1.x")
 
-        prob.setup(vector_class=PETScVector, check=False, mode='fwd')
+        prob.setup(check=False, mode='fwd')
         prob.run_model()
 
         diag1 = [4.5, 4.5, 3.0]
@@ -229,7 +232,7 @@ class MPITests2(unittest.TestCase):
         assert_rel_error(self, J['C2.y', 'P.x'], diag1, 1e-6)
         assert_rel_error(self, J['C3.y', 'P.x'], diag2, 1e-6)
 
-        prob.setup(vector_class=PETScVector, check=False, mode='rev')
+        prob.setup(check=False, mode='rev')
         prob.run_model()
 
         J = prob.compute_totals(of=['C2.y', "C3.y"], wrt=['P.x'])
@@ -253,7 +256,8 @@ class MPITests2(unittest.TestCase):
         sub.add_subsystem('C2', ExecComp(['y=5.0*x'],
                                          x=numpy.zeros(size, dtype=float),
                                          y=numpy.zeros(size, dtype=float)))
-        root.add_subsystem('C3', DistribExecComp(['y=3.0*x1+7.0*x2', 'y=1.5*x1+3.5*x2'], arr_size=size,
+        root.add_subsystem('C3', DistribExecComp(['y=3.0*x1+7.0*x2', 'y=1.5*x1+3.5*x2'],
+                                                 arr_size=size,
                                                  x1=numpy.zeros(size, dtype=float),
                                                  x2=numpy.zeros(size, dtype=float),
                                                  y=numpy.zeros(size, dtype=float)))
@@ -270,9 +274,8 @@ class MPITests2(unittest.TestCase):
         root.linear_solver = LinearBlockGS()
         sub.linear_solver = LinearBlockGS()
 
-        prob.model.suppress_solver_output = True
-        sub.suppress_solver_output = True
-        prob.setup(vector_class=PETScVector, check=False, mode='fwd')
+        prob.set_solver_print(0)
+        prob.setup(mode='fwd')
         prob.run_driver()
 
         diag1 = numpy.diag([-6.0, -6.0, -3.0])
@@ -282,7 +285,7 @@ class MPITests2(unittest.TestCase):
         assert_rel_error(self, J['C4.y', 'P1.x'], diag1, 1e-6)
         assert_rel_error(self, J['C4.y', 'P2.x'], diag2, 1e-6)
 
-        prob.setup(vector_class=PETScVector, check=False, mode='rev')
+        prob.setup(check=False, mode='rev')
 
         prob.run_driver()
 
@@ -294,7 +297,6 @@ class MPITests2(unittest.TestCase):
         raise unittest.SkipTest("distrib vois no supported yet")
 
 
-
 class DistribStateImplicit(ImplicitComponent):
     """
     This component is unusual in that it has a distributed variable 'states' that
@@ -302,8 +304,11 @@ class DistribStateImplicit(ImplicitComponent):
     values of 'states' and the output 'out_var' is the sum of all of the distributed values
     of 'states'.
     """
+
     def setup(self):
-        self.add_input('a', val=10., units='m')
+        self.options['distributed'] = True
+
+        self.add_input('a', val=10., units='m', src_indices=[0])
 
         rank = self.comm.rank
 
@@ -371,7 +376,8 @@ class DistribStateImplicit(ImplicitComponent):
             if 'a' in d_i:
                     d_i['a'] -= numpy.sum(d_r['states'])
 
-@unittest.skipUnless(MPI and PETScVector, "MPI and PETSc are required.")
+
+@unittest.skipUnless(PETScVector, "PETSc is required.")
 class MPITests3(unittest.TestCase):
 
     N_PROCS = 3
@@ -383,17 +389,18 @@ class MPITests3(unittest.TestCase):
         p.model.add_subsystem('des_vars', IndepVarComp('a', val=10., units='m'), promotes=['*'])
         p.model.add_subsystem('icomp', DistribStateImplicit(), promotes=['*'])
 
-        expected = numpy.array([[5.]])
+        expected = numpy.array([5.])
 
-        p.setup(vector_class=PETScVector, mode='fwd')
+        p.setup(mode='fwd')
         p.run_model()
         jac = p.compute_totals(of=['out_var'], wrt=['a'], return_format='dict')
-        assert_rel_error(self, jac['out_var']['a'], expected, 1e-6)
+        assert_rel_error(self, jac['out_var']['a'][0], expected, 1e-6)
 
-        p.setup(vector_class=PETScVector, mode='rev')
+        p.setup(mode='rev')
         p.run_model()
         jac = p.compute_totals(of=['out_var'], wrt=['a'], return_format='dict')
-        assert_rel_error(self, jac['out_var']['a'], expected, 1e-6)
+        assert_rel_error(self, jac['out_var']['a'][0], expected, 1e-6)
+
 
 if __name__ == "__main__":
     from openmdao.utils.mpi import mpirun_tests

@@ -71,10 +71,10 @@ def write_outputs(in_or_out, comp_type, dict_of_outputs, hierarchical, print_arr
     # Need an ordered list of possible output values for the two cases: inputs and outputs
     #  so that we do the column output in the correct order
     if in_or_out == 'input':
-        out_types = ('value', 'units',)
+        out_types = ('value', 'units', 'shape', 'prom_name')
     else:
         out_types = ('value', 'resids', 'units', 'shape', 'lower', 'upper', 'ref',
-                     'ref0', 'res_ref')
+                     'ref0', 'res_ref', 'prom_name')
     # Figure out which columns will be displayed
     # Look at any one of the outputs, they should all be the same
     outputs = dict_of_outputs[list(dict_of_outputs)[0]]

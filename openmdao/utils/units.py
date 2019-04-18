@@ -12,15 +12,18 @@ Justin Gray.
 from __future__ import division, print_function
 
 
+import sys
+
 import re
 import os.path
 from collections import OrderedDict
+
 from six import iteritems
 from six.moves import zip
 from six.moves.configparser import RawConfigParser as ConfigParser
 
 # pylint: disable=E0611, F0401
-from math import sin, cos, tan, floor, pi
+from math import floor, pi
 
 
 ####################################
@@ -715,7 +718,13 @@ def import_library(libfilepointer):
     _UNIT_CACHE = {}
     _UNIT_LIB = ConfigParser()
     _UNIT_LIB.optionxform = _do_nothing
-    _UNIT_LIB.readfp(libfilepointer)
+
+    # New in Python 3.2: read_file() replaces readfp().
+    if sys.version_info >= (3, 2):
+        _UNIT_LIB.read_file(libfilepointer)
+    else:
+        _UNIT_LIB.readfp(libfilepointer)
+
     required_base_types = ['length', 'mass', 'time', 'temperature', 'angle']
     _UNIT_LIB.base_names = list()
     # used to is_angle() and other base type checking
@@ -769,7 +778,13 @@ def update_library(filename):
     try:
         cfg = ConfigParser()
         cfg.optionxform = _do_nothing
-        cfg.readfp(inp)
+
+        # New in Python 3.2: read_file() replaces readfp().
+        if sys.version_info >= (3, 2):
+            cfg.read_file(inp)
+        else:
+            cfg.readfp(inp)
+
         _update_library(cfg)
     finally:
         inp.close()
@@ -1029,7 +1044,7 @@ if __name__ == '__main__':
         (conversion_to_base_units('cm'), (0., 1.0e-2)),
         (conversion_to_base_units('km'), (0., 1.0e3)),
         (convert_units(3.0, 'mm'), (3.0e-3)),
-        (convert_units(3.0, 'mm', 'cm'), (3.0e-1))
+        (convert_units(3.0, 'mm', 'cm'), (3.0e-1)),
         (convert_units(100, 'degC', 'degF'), (212.))
     ]:
         print(returned, 'should be', expected)

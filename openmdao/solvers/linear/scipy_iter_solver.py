@@ -2,12 +2,13 @@
 
 from __future__ import division, print_function
 
+from distutils.version import LooseVersion
 import numpy as np
-from scipy.sparse.linalg import LinearOperator, gmres, bicg, bicgstab, cg, cgs
+import scipy
+from scipy.sparse.linalg import LinearOperator, gmres
 
 from openmdao.solvers.solver import LinearSolver
 from openmdao.utils.general_utils import warn_deprecation
-from openmdao.recorders.recording_iteration_stack import Recording
 
 _SOLVER_TYPES = {
     # 'bicg': bicg,
@@ -44,10 +45,22 @@ class ScipyKrylov(LinearSolver):
         # initialize preconditioner to None
         self.precon = None
 
+    def _assembled_jac_solver_iter(self):
+        """
+        Return a generator of linear solvers using assembled jacs.
+        """
+        if self.options['assemble_jac']:
+            yield self
+        if self.precon is not None:
+            for s in self.precon._assembled_jac_solver_iter():
+                yield s
+
     def _declare_options(self):
         """
         Declare options before kwargs are processed in the init method.
         """
+        super(ScipyKrylov, self)._declare_options()
+
         self.options.declare('solver', default='gmres', values=tuple(_SOLVER_TYPES.keys()),
                              desc='function handle for actual solver')
 
@@ -113,19 +126,19 @@ class ScipyKrylov(LinearSolver):
         if self.precon is not None:
             self.precon._linearize()
 
-    def _mat_vec(self, in_vec):
+    def _mat_vec(self, in_arr):
         """
         Compute matrix-vector product.
 
         Parameters
         ----------
-        in_vec : ndarray
-            the incoming array (combines all varsets).
+        in_arr : ndarray
+            the incoming array.
 
         Returns
         -------
         ndarray
-            the outgoing array after the product (combines all varsets).
+            the outgoing array after the product.
         """
         vec_name = self._vec_name
         system = self._system
@@ -137,15 +150,16 @@ class ScipyKrylov(LinearSolver):
             x_vec = system._vectors['residual'][vec_name]
             b_vec = system._vectors['output'][vec_name]
 
-        x_vec.set_data(in_vec)
+        x_vec._data[:] = in_arr
         scope_out, scope_in = system._get_scope()
-        system._apply_linear([vec_name], self._rel_systems, self._mode, scope_out, scope_in)
+        system._apply_linear(self._assembled_jac, [vec_name], self._rel_systems, self._mode,
+                             scope_out, scope_in)
 
         # DO NOT REMOVE: frequently used for debugging
-        # print('in', in_vec)
-        # print('out', b_vec.get_data())
+        # print('in', in_arr)
+        # print('out', b_vec._data)
 
-        return b_vec.get_data()
+        return b_vec._data
 
     def _monitor(self, res):
         """
@@ -157,12 +171,11 @@ class ScipyKrylov(LinearSolver):
             the current residual vector.
         """
         norm = np.linalg.norm(res)
-        with Recording('ScipyKrylov', self._iter_count, self):
-            if self._iter_count == 0:
-                if norm != 0.0:
-                    self._norm0 = norm
-                else:
-                    self._norm0 = 1.0
+        if self._iter_count == 0:
+            if norm != 0.0:
+                self._norm0 = norm
+            else:
+                self._norm0 = 1.0
 
         self._mpi_print(self._iter_count, norm, norm / self._norm0)
         self._iter_count += 1
@@ -179,15 +192,6 @@ class ScipyKrylov(LinearSolver):
             'fwd' or 'rev'.
         rel_systems : set of str
             Names of systems relevant to the current solve.
-
-        Returns
-        -------
-        boolean
-            Failure flag; True if failed to converge, False is successful.
-        float
-            absolute error.
-        float
-            relative error.
         """
         self._vec_names = vec_names
         self._rel_systems = rel_systems
@@ -214,7 +218,7 @@ class ScipyKrylov(LinearSolver):
                 x_vec = system._vectors['residual'][vec_name]
                 b_vec = system._vectors['output'][vec_name]
 
-            x_vec_combined = x_vec.get_data()
+            x_vec_combined = x_vec._data
             size = x_vec_combined.size
             linop = LinearOperator((size, size), dtype=float,
                                    matvec=self._mat_vec)
@@ -229,20 +233,21 @@ class ScipyKrylov(LinearSolver):
 
             self._iter_count = 0
             if solver is gmres:
-                x, info = solver(linop, b_vec.get_data(), M=M, restart=restart,
-                                 x0=x_vec_combined, maxiter=maxiter, tol=atol,
-                                 callback=self._monitor)
+                if LooseVersion(scipy.__version__) < LooseVersion("1.1"):
+                    x, info = solver(linop, b_vec._data.copy(), M=M, restart=restart,
+                                     x0=x_vec_combined, maxiter=maxiter, tol=atol,
+                                     callback=self._monitor)
+                else:
+                    x, info = solver(linop, b_vec._data.copy(), M=M, restart=restart,
+                                     x0=x_vec_combined, maxiter=maxiter, tol=atol, atol='legacy',
+                                     callback=self._monitor)
             else:
-                x, info = solver(linop, b_vec.get_data(), M=M,
+                x, info = solver(linop, b_vec._data.copy(), M=M,
                                  x0=x_vec_combined, maxiter=maxiter, tol=atol,
                                  callback=self._monitor)
 
             fail |= (info != 0)
-            x_vec.set_data(x)
-
-        # TODO: implement this properly
-
-        return fail, 0., 0.
+            x_vec._data[:] = x
 
     def _apply_precon(self, in_vec):
         """
@@ -274,7 +279,7 @@ class ScipyKrylov(LinearSolver):
             b_vec = system._vectors['output'][vec_name]
 
         # set value of b vector to KSP provided value
-        b_vec.set_data(in_vec)
+        b_vec._data[:] = in_vec
 
         # call the preconditioner
         self._solver_info.append_precon()
@@ -282,7 +287,7 @@ class ScipyKrylov(LinearSolver):
         self._solver_info.pop()
 
         # return resulting value of x vector
-        return x_vec.get_data()
+        return x_vec._data.copy()
 
     @property
     def preconditioner(self):

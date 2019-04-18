@@ -1,12 +1,9 @@
 """A module containing various configuration checks for an OpenMDAO Problem."""
 from __future__ import print_function
 
-import sys
-
 from collections import defaultdict
 from six import iteritems
 
-import networkx as nx
 import numpy as np
 
 from openmdao.core.group import Group
@@ -137,6 +134,9 @@ def _check_dup_comp_inputs(problem, logger):
     logger : object
         The object that manages logging output.
     """
+    if isinstance(problem.model, Component):
+        return
+
     input_srcs = problem.model._conn_global_abs_in2out
     src2inps = defaultdict(list)
     for inp, src in iteritems(input_srcs):
@@ -174,7 +174,10 @@ def _check_hanging_inputs(problem, logger):
     logger : object
         The object that manages logging output.
     """
-    input_srcs = problem.model._conn_global_abs_in2out
+    if isinstance(problem.model, Component):
+        input_srcs = {}
+    else:
+        input_srcs = problem.model._conn_global_abs_in2out
 
     prom_ins = problem.model._var_allprocs_prom2abs_list['input']
     unconns = []
@@ -192,6 +195,27 @@ def _check_hanging_inputs(problem, logger):
             else:  # promoted
                 msg.append("   %s: %s\n" % (prom, prom_ins[prom]))
         logger.warning(''.join(msg))
+
+
+def _check_comp_has_no_outputs(problem, logger):
+    """
+    Issue a logger warning if any components do not have any outputs.
+
+    Parameters
+    ----------
+    problem : <Problem>
+        The problem being checked.
+    logger : object
+        The object that manages logging output.
+    """
+    msg = []
+
+    for comp in problem.model.system_iter(include_self=True, recurse=True, typ=Component):
+        if len(comp._var_allprocs_abs_names['output']) == 0:
+            msg.append("   %s\n" % comp.pathname)
+
+    if msg:
+        logger.warning(''.join(["The following Components do not have any outputs:\n"] + msg))
 
 
 def _check_system_configs(problem, logger):
@@ -254,7 +278,7 @@ def _check_solvers(problem, logger):
             is_iter_nl = True
         else:
             is_iter_nl = (
-                (sys.nonlinear_solver and sys.nonlinear_solver.options['maxiter'] > 1) or
+                (sys.nonlinear_solver and 'maxiter' in sys.nonlinear_solver.options) or
                 (has_states and overrides_method('solve_nonlinear', sys, ImplicitComponent))
             )
             iter_nl_depth = depth if is_iter_nl else np.inf
@@ -263,8 +287,9 @@ def _check_solvers(problem, logger):
             is_iter_ln = True
         else:
             is_iter_ln = (
-                (sys.linear_solver and (sys.linear_solver.options['maxiter'] > 1 or
-                 isinstance(sys.linear_solver, DirectSolver))) or
+                (sys.linear_solver and
+                 ('maxiter' in sys.linear_solver.options or
+                  isinstance(sys.linear_solver, DirectSolver))) or
                 (has_states and overrides_method('solve_linear', sys, ImplicitComponent))
             )
             iter_ln_depth = depth if is_iter_ln else np.inf
@@ -295,6 +320,34 @@ def _check_solvers(problem, logger):
                 logger.warning(msg)
 
 
+def _check_missing_recorders(problem, logger):
+    """
+    Check to see if there are any recorders of any type on the Problem.
+
+    Parameters
+    ----------
+    problem : <Problem>
+        The problem being checked.
+    logger : object
+        The object that manages logging output.
+    """
+    # Look for Driver recorder
+    if problem.driver._rec_mgr._recorders:
+        return
+
+    # Look for System and Solver recorders
+    for system in problem.model.system_iter(include_self=True, recurse=True):
+        if system._rec_mgr._recorders:
+            return
+        if system.nonlinear_solver and system.nonlinear_solver._rec_mgr._recorders:
+            return
+        if system.linear_solver and system.linear_solver._rec_mgr._recorders:
+            return
+
+    msg = "The Problem has no recorder of any kind attached"
+    logger.warning(msg)
+
+
 # Dict of all checks by name, mapped to the corresponding function that performs the check
 # Each function must be of the form  f(problem, logger).
 _checks = {
@@ -303,6 +356,8 @@ _checks = {
     'system': _check_system_configs,
     'solvers': _check_solvers,
     'dup_inputs': _check_dup_comp_inputs,
+    'missing_recorders': _check_missing_recorders,
+    'comp_has_no_outputs': _check_comp_has_no_outputs,
 }
 
 
@@ -374,3 +429,37 @@ def _check_config_cmd(options):
         exit()
 
     return _check_config
+
+
+def check_allocate_complex_ln(model, under_cs):
+    """
+    Return True if linear vector should be complex.
+
+    This happens when a solver needs derivatives under complex step.
+
+    Parameters
+    ----------
+    model : <Group>
+        Model to be checked, usually the root model.
+    under_cs : bool
+        Flag indicates if complex vectors were allocated in a containing Group or were force
+        allocated in setup.
+
+    Returns
+    -------
+    bool
+        True if linear vector should be complex.
+    """
+    under_cs |= 'cs' in model._approx_schemes
+
+    if under_cs and model.nonlinear_solver is not None and \
+       model.nonlinear_solver.supports['gradients']:
+        return True
+
+    for sub in model._subsystems_allprocs:
+        chk = check_allocate_complex_ln(sub, under_cs)
+
+        if chk:
+            return True
+
+    return False

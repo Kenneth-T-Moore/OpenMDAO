@@ -5,12 +5,14 @@ from six.moves import zip
 from six import iteritems, iterkeys, itervalues, string_types
 import collections
 
-from parameterized import parameterized
+try:
+    from parameterized import parameterized
+except ImportError:
+    from openmdao.utils.assert_utils import SkipParameterized as parameterized
+
 from unittest import SkipTest
 
 from openmdao.core.problem import Problem
-from openmdao.jacobians.assembled_jacobian import DenseJacobian, COOJacobian, \
-                                                  CSRJacobian, CSCJacobian
 from openmdao.solvers.linear.scipy_iter_solver import ScipyKrylov
 from openmdao.solvers.nonlinear.newton import NewtonSolver
 from openmdao.test_suite.groups.cycle_group import CycleGroup
@@ -72,8 +74,8 @@ def _test_suite(*args, **kwargs):
                         opts[arg] = arg_value
                 else:
                     # We're not asked to vary this parameter, so choose first item as default
-                    # Since we may use a generator (e.g. range), take the first value from the iterator
-                    # instead of indexing.
+                    # Since we may use a generator (e.g. range), take the first value from the
+                    # iterator instead of indexing.
                     for iter_val in default_val:
                         opts[arg] = (iter_val,)
                         break
@@ -108,14 +110,19 @@ def parametric_suite(*args, **kwargs):
     """
     Decorator used for testing a range of different options for a particular
     ParametericTestGroup. If args is present, must only be the value '*',
-    indicating running all available groups/parameters. Otherwise, use kwargs to set the options like so:
-    arg=value will specify that option,
-    arg='*' will vary over all default options,
-    arg=iterable will iterate over the given options.
-    Arguments that are not specified will have a reasonable default chosen."""
+    indicating running all available groups/parameters. Otherwise, use kwargs
+    to set the options like so:
+
+        arg=value will specify that option,
+        arg='*' will vary over all default options,
+        arg=iterable will iterate over the given options.
+
+    Arguments that are not specified will have a reasonable default chosen.
+    """
     run_by_default = kwargs.pop('run_by_default', False)
     test_cases = _test_suite(*args, **kwargs)
-    return parameterized.expand(test_cases, testcase_func_name=_test_name(run_by_default))
+    return parameterized.expand(test_cases, name_func=_test_name(run_by_default))
+
 
 # Needed for Nose
 parametric_suite.__test__ = False
@@ -143,6 +150,7 @@ class ParameterizedInstance(object):
     linear_solver_options : dict
         Options to pass into the constructor for `linear_solver_class`.
     """
+
     def __init__(self, group_type, **kwargs):
 
         self._group_type = group_type
@@ -162,6 +170,7 @@ class ParameterizedInstance(object):
         self.linear_solver_options = {'maxiter': 200,
                                       'atol': 1e-10,
                                       'rtol': 1e-10,
+                                      'assemble_jac': False,
                                       }
 
     def setup(self, check=False):
@@ -177,26 +186,29 @@ class ParameterizedInstance(object):
 
         group = MODELS[self._group_type](**args)
 
-        if args['vector_class'] == 'default':
+        local_vec_class = args.get('local_vector_class', 'default')
+        if local_vec_class == 'default':
             vec_class = DefaultVector
-        elif args['vector_class'] == 'petsc':
+        elif local_vec_class == 'petsc':
             vec_class = PETScVector
             if PETScVector is None:
                 raise SkipTest('PETSc not available.')
+        else:
+            raise RuntimeError("Unrecognized local_vector_class '%s'" % local_vec_class)
 
         self.problem = prob = Problem(group)
 
         if args['assembled_jac']:
+            jacobian_type = args.get('jacobian_type', 'dense')
 
-            jacobian_type = args['jacobian_type']
             if jacobian_type == 'dense':
-                prob.model.jacobian = DenseJacobian()
-            elif jacobian_type == 'sparse-coo':
-                prob.model.jacobian = COOJacobian()
-            elif jacobian_type == 'sparse-csr':
-                prob.model.jacobian = CSRJacobian()
+                self.linear_solver_options['assemble_jac'] = True
+                prob.model.options['assembled_jac_type'] = 'dense'
             elif jacobian_type == 'sparse-csc':
-                prob.model.jacobian = CSCJacobian()
+                self.linear_solver_options['assemble_jac'] = True
+                prob.model.options['assembled_jac_type'] = 'csc'
+            elif jacobian_type != 'matvec':
+                raise RuntimeError("Invalid assembled_jac: '%s'." % jacobian_type)
 
         prob.model.linear_solver = self.linear_solver_class(**self.linear_solver_options)
 
@@ -204,11 +216,9 @@ class ParameterizedInstance(object):
 
         prob.set_solver_print(level=0)
 
-        prob.setup(vec_class, check=check)
+        prob.setup(check=check, local_vector_class=vec_class)
 
-        fail, rele, abse = prob.run_model()
-        if fail:
-            raise RuntimeError('Problem run failed: re %f ; ae %f' % (rele, abse))
+        prob.run_model()
 
     def compute_totals(self, mode='fwd'):
         """
@@ -228,9 +238,7 @@ class ParameterizedInstance(object):
 
         if problem._mode != mode:
             problem.setup(check=False, mode=mode)
-            fail, rele, abse = problem.run_model()
-            if fail:
-                raise RuntimeError('Problem run failed: re %f ; ae %f' % (rele, abse))
+            problem.run_model()
 
         root = problem.model
         of = root.total_of

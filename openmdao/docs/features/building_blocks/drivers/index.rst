@@ -1,3 +1,4 @@
+.. _drivers:
 
 *******
 Drivers
@@ -9,3 +10,4 @@ Drivers
     scipy_optimize_driver.rst
     pyoptsparse_driver.rst
     genetic_algorithm.rst
+    doe_driver.rst

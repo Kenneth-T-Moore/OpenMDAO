@@ -16,13 +16,26 @@ solves and much-improved performance.
 These problems are said to have separable variables.
 The concept of separability is explained in the :ref:`Theory Manual<theory_separable_variables>`.
 
+Simultaneous derivative coloring in OpenMDAO can be performed either statically or dynamically.
+
+When mode is set to 'fwd' or 'rev', a unidirectional coloring algorithm is used to group columns
+or rows, respectively, for simultaneous derivative calculation.  The algorithm used in this case
+is the greedy algorithm with ordering by incidence degree found in 
+T. F. Coleman and J. J. More, *Estimation of sparse Jacobian matrices and graph coloring
+problems*, SIAM J. Numer. Anal., 20 (1983), pp. 187–209.
+
+When using simultaneous derivatives, setting `mode='auto'` will indicate that bidirectional coloring 
+should be used.  Bidirectional coloring can significantly decrease the number of linear solves needed 
+to generate the total Jacobian relative to coloring only in fwd or rev mode.
+
+For more information on the bidirectional coloring algorithm, see
+T. F. Coleman and A. Verma, *The efficient computation of sparse Jacobian matrices using automatic 
+differentiation*, SIAM J. Sci. Comput., 19 (1998), pp. 1210–1233.
+
 .. note::
 
-   While it is possible for problems to exist where simultaneous reverse solves would be possible,
-   OpenMDAO does not currently support simultaneous derivatives in reverse mode.
-
-
-Simultaneous derivative coloring in OpenMDAO can be performed either statically or dynamically.
+    Bidirectional coloring is a new feature and should be considered *experimental* at this
+    point.
 
 
 Dynamic Coloring
@@ -40,16 +53,16 @@ set the `dynamic_simul_derivs` option on the driver.  For example:
 
 
 If you want to change the number of compute_totals calls that the coloring algorithm uses to
-compute the jacobian sparsity (default is 3), you can set the `dynamic_simul_derivs_repeats` option.
+compute the jacobian sparsity (default is 3), you can set the `dynamic_derivs_repeats` option.
 For example:
 
 .. code-block:: python
 
-    prob.driver.options['dynamic_simul_derivs_repeats'] = 2
+    prob.driver.options['dynamic_derivs_repeats'] = 2
 
 
 Whenever a dynamic coloring is computed, the coloring is written to a file called *coloring.json*
-for later inspection.
+for later inspection and/or 'static' use.
 
 
 Static Coloring
@@ -78,34 +91,44 @@ coloring we would pass to :code:`set_simul_deriv_color` would look like this:
 
 .. code-block:: python
 
-    color_info = (
-        # first our list of columns grouped by color, with the first list containing any
-        # columns that are not colored (we don't have any of those in this case).
-        [
-            [],   # non-colored columns
-            [0, 2, 4, 6, 8],   # color 0
-            [1, 3, 5, 7, 9],   # color 1
-        ],
+    color_info = {
+        "fwd": [
+                # first our list of columns grouped by color, with the first list containing any
+                # columns that are not colored (we don't have any of those in this case).
+                [
+                    [],   # non-colored columns
+                    [0, 2, 4, 6, 8],   # color 0
+                    [1, 3, 5, 7, 9],   # color 1
+                ],
 
-        # next, for each column we provide either a list of nonzero row indices if the
-        # column is colored, or None if the column is not colored (we don't have any of those here).
-        [
-            [0],
-            [0],
-            [1],
-            [1],
-            [2],
-            [2],
-            [3],
-            [3],
-            [4],
-            [4],
-        ],
+                # next, for each column we provide either a list of nonzero row indices if the
+                # column is colored, or None if the column is not colored (we don't have any of those here).
+                [
+                    [0],
+                    [0],
+                    [1],
+                    [1],
+                    [2],
+                    [2],
+                    [3],
+                    [3],
+                    [4],
+                    [4],
+                ]
+            ],
+
+        # OpenMDAO supports bidirectional coloring, so it can solve for part of the jacobian in
+        # fwd mode and part in rev mode.  In this case, we don't need any rev mode solves, so
+        # the rev mode entry has an empty row list.
+
+        # Note that we show the opposite entry ('rev' in this case) here for the purpose of
+        # explanation, but it's also valid to remove the opposite entry completely if it's empty.
+        "rev": [[[]], []],
 
         # next we could specify our sparsity, which we need if we're using the pyOptSparseDriver
-        # as our Driver.  If our driver doesn't need sparsity, we could just replace the dict
-        # shown below with None.
-        {
+        # as our Driver.  If our driver doesn't need sparsity, we could just remove the
+        # 'sparsity' entry completely.
+        'sparsity': {
             # dictionary for our response variable, y
             'y': {
                 # dictionary for our design variable, x
@@ -116,7 +139,7 @@ coloring we would pass to :code:`set_simul_deriv_color` would look like this:
                 )
             }
         }
-    )
+    }
 
     # we would activate simultaneous derivatives by calling this on our driver
     prob.driver.set_simul_deriv_color(color_info)
@@ -129,18 +152,19 @@ example.
 
 .. _feature_automatic_coloring:
 
-Automatic Generation of Coloring
-################################
+Automatic Generation of Static Coloring
+#######################################
 Although you *can* compute the coloring manually if you know enough information about your problem,
-doing so can be challenging. Also, even small changes to your model,
+doing so can be challenging and error prone. Also, even small changes to your model,
 e.g., adding new constraints or changing the sparsity of a sub-component, can change the
 coloring of your model. So care must be taken to keep the coloring up to date when
 you change your model.
 
 To streamline the process, OpenMDAO provides an automatic coloring algorithm that uses the
-sparsity pattern given by the :ref:`declare_partials <feature_sparse_partials>` calls from all of the components in your model.
-So if you're not :ref:`specifying the sparsity of the partial derivatives<feature_sparse_partials>`
-of your components, then it won't be possible to find an automatic coloring
+sparsity pattern given by the :ref:`declare_partials <feature_sparse_partials>` calls from all 
+of the components in your model.
+So you should :ref:`specify the sparsity of the partial derivatives<feature_sparse_partials>`
+of your components in order to make it possible to find a more optimal automatic coloring
 for your model.
 
 The *color_info* data structure can be generated automatically using the following command:
@@ -163,19 +187,15 @@ would look like this:
 
     Total jacobian shape: (22, 21)
 
-    1 uncolored columns
-    5 columns in color 1
-    5 columns in color 2
-    5 columns in color 3
-    5 columns in color 4
 
     ########### BEGIN COLORING DATA ################
-    [[
+    {
+    "fwd": [[
        [20],   # uncolored columns
-       [0, 2, 4, 6, 8],   # color 1
-       [1, 3, 5, 7, 9],   # color 2
-       [10, 12, 14, 16, 18],   # color 3
-       [11, 13, 15, 17, 19],   # color 4
+       [18, 0, 2, 4, 6],   # color 1
+       [17, 1, 3, 5, 8],   # color 2
+       [16, 9, 10, 12, 14],   # color 3
+       [15, 7, 11, 13, 19]   # color 4
     ],
     [
        [1, 11, 16, 21],   # column 0
@@ -198,9 +218,14 @@ would look like this:
        [8, 19],   # column 17
        [9, 15, 20],   # column 18
        [10, 20],   # column 19
-       None,   # column 20
+       None   # column 20
+    ]],
+    "rev": [[
+       []   # uncolored rows
     ],
-    {
+    [
+    ]],
+    "sparsity": {
     "circle.area": {
        "indeps.x": [[], [], [1, 10]],
        "indeps.y": [[], [], [1, 10]],
@@ -226,9 +251,11 @@ would look like this:
        "indeps.y": [[], [], [1, 10]],
        "indeps.r": [[], [], [1, 1]]
     }
-    }]
+    }
+    }
     ########### END COLORING DATA ############
 
+    Colored solves in fwd mode: 5   opposite solves: 0
 
     Total colors vs. total size: 5 vs 21  (76.2% improvement)
 
@@ -331,9 +358,8 @@ The coloring will be written in json format to the given file and can be loaded 
 
 
 If you run *openmdao simul_coloring* and it turns out there is no simultaneous coloring available,
-or that you don't gain very much by coloring, don't be surprised.
-Problems that have the necessary total Jacobian sparsity to allow simultaneous derivatives are
-relatively uncommon.
+or that you don't gain very much by coloring, don't be surprised.  Not all total Jacobians are 
+sparse enough to benefit signficantly from simultaneous derivatives.
 
 
 Checking that it works

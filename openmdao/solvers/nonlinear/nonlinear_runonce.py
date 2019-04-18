@@ -21,15 +21,6 @@ class NonlinearRunOnce(NonlinearSolver):
     def solve(self):
         """
         Run the solver.
-
-        Returns
-        -------
-        boolean
-            Failure flag; True if failed to converge, False is successful.
-        float
-            absolute error.
-        float
-            relative error.
         """
         system = self._system
 
@@ -46,23 +37,23 @@ class NonlinearRunOnce(NonlinearSolver):
 
             # If this is not a parallel group, transfer for each subsystem just prior to running it.
             else:
-                for isub, subsys in enumerate(system._subsystems_myproc):
-                    system._transfer('nonlinear', 'fwd', isub)
-                    subsys._solve_nonlinear()
-                    system._check_reconf_update()
+                self._gs_iter()
+
             rec.abs = 0.0
             rec.rel = 0.0
-
-        return False, 0.0, 0.0
 
     def _declare_options(self):
         """
         Declare options before kwargs are processed in the init method.
         """
-        # changing the default maxiter from the base class
-        self.options.declare('maxiter', default=0, values=(0,),
-                             desc='maximum number of iterations '
-                                  '(this solver does not iterate)')
+        # Remove unused options from base options here, so that users
+        #  attempting to set them will get KeyErrors.
+        self.options.undeclare("atol")
+        self.options.undeclare("rtol")
+
+        # this solver does not iterate
+        self.options.undeclare("maxiter")
+        self.options.undeclare("err_on_maxiter")
 
 
 class NonLinearRunOnce(NonlinearRunOnce):

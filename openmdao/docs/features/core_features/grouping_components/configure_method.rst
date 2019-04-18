@@ -1,8 +1,8 @@
 .. _feature_configure:
 
-************************************************
-Modify Children of a Group with Configure Method
-************************************************
+***************************************************
+Modifying Children of a Group with Configure Method
+***************************************************
 
 
 Most of the time, the :code:`setup` method is the only one you need to define on a group. The main exception is the case where you
@@ -26,19 +26,5 @@ system.
 Uses of setup vs. configure
 ---------------------------
 
-**setup**
-
- - Add subsystems
- - Issue connections
- - Assign linear and nonlinear solvers at group level
- - Change solver settings in group
- - Assign Jacobians at group level
- - Set system execution order
-
-**configure**
-
- - Assign linear and nonlinear solvers to subsystems
- - Change solver settings in subsystems
- - Assign Jacobians to subsystems
- - Set execution order in subsystems
+To understand when to use setup and when to use configure, see the :ref:`Theory Manual entry on how the setup stack works.<theory_setup_stack>`.
 

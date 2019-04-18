@@ -22,6 +22,9 @@ class IndepVarComp(ExplicitComponent):
     _indep_external : list
         list of this component's independent variables that are declared externally
         via the add_output method.
+    _indep_external_discrete : list
+        list of this component's discrete independent variables that are declared externally
+        via the add_discrete_output method.
     """
 
     def __init__(self, name=None, val=1.0, **kwargs):
@@ -43,6 +46,7 @@ class IndepVarComp(ExplicitComponent):
         super(IndepVarComp, self).__init__()
         self._indep = []
         self._indep_external = []
+        self._indep_external_discrete = []
 
         # A single variable is declared during instantiation
         if isinstance(name, string_types):
@@ -87,14 +91,17 @@ class IndepVarComp(ExplicitComponent):
         for (name, val, kwargs) in self._indep + self._indep_external:
             super(IndepVarComp, self).add_output(name, val, **kwargs)
 
-        if len(self._indep) == 0 and len(self._indep_external) == 0:
+        for (name, val, kwargs) in self._indep_external_discrete:
+            super(IndepVarComp, self).add_discrete_output(name, val, **kwargs)
+
+        if len(self._indep) + len(self._indep_external) + len(self._indep_external_discrete) == 0:
             raise RuntimeError("No outputs (independent variables) have been declared for "
                                "component '{}'. They must either be declared during "
-                               "instantiation or by calling "
-                               "add_output afterwards.".format(self.pathname))
+                               "instantiation or by calling add_output or add_discrete_output "
+                               "afterwards.".format(self.pathname))
 
     def add_output(self, name, val=1.0, shape=None, units=None, res_units=None, desc='',
-                   lower=None, upper=None, ref=1.0, ref0=0.0, res_ref=1.0, var_set=0):
+                   lower=None, upper=None, ref=1.0, ref0=0.0, res_ref=None):
         """
         Add an independent variable to this component.
 
@@ -133,26 +140,43 @@ class IndepVarComp(ExplicitComponent):
             the scaled value is 0. Default is 0.
         res_ref : float
             Scaling parameter. The value in the user-defined res_units of this output's residual
-            when the scaled value is 1. Default is 1.
-        var_set : hashable object
-            For advanced users only. ID or color for this variable, relevant for reconfigurability.
-            Default is 0.
+            when the scaled value is 1. Default is None, which means residual scaling matches
+            output scaling.
         """
+        if res_ref is None:
+            res_ref = ref
+
         kwargs = {'shape': shape, 'units': units, 'res_units': res_units, 'desc': desc,
                   'lower': lower, 'upper': upper, 'ref': ref, 'ref0': ref0,
-                  'res_ref': res_ref, 'var_set': var_set}
+                  'res_ref': res_ref}
         self._indep_external.append((name, val, kwargs))
 
-    def _linearize(self, do_nl=False, do_ln=False):
+    def add_discrete_output(self, name, val, desc=''):
+        """
+        Add an output variable to the component.
+
+        Parameters
+        ----------
+        name : str
+            name of the variable in this component's namespace.
+        val : float or list or tuple or ndarray
+            The initial value of the variable being added in user-defined units. Default is 1.0.
+        desc : str
+            description of the variable.
+        """
+        kwargs = {'desc': desc}
+        self._indep_external_discrete.append((name, val, kwargs))
+
+    def _linearize(self, jac=None, sub_do_ln=False):
         """
         Compute jacobian / factorization. The model is assumed to be in a scaled state.
 
         Parameters
         ----------
-        do_nl : boolean
-            Flag indicating if the nonlinear solver should be linearized.
-        do_ln : boolean
-            Flag indicating if the linear solver should be linearized.
+        jac : Jacobian or None
+            If None, use local jacobian, else use assembled jacobian jac.
+        sub_do_ln : boolean
+            Flag indicating if the children should call linearize on their linear solvers.
         """
         # define this as empty for IndepVarComp to avoid overhead of ExplicitComponent._linearize.
         pass

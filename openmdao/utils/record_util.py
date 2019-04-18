@@ -5,7 +5,7 @@ from fnmatch import fnmatchcase
 from six.moves import map, zip
 from six import iteritems
 import os
-
+import json
 import numpy as np
 
 
@@ -33,7 +33,7 @@ def create_local_meta(name):
     return local_meta
 
 
-def format_iteration_coordinate(coord):
+def format_iteration_coordinate(coord, prefix=None):
     """
     Format the iteration coordinate to a human-readable string.
 
@@ -41,6 +41,9 @@ def format_iteration_coordinate(coord):
     ----------
     coord : list
         List containing the iteration coordinate.
+
+    prefix : str or None
+        Prefix to prepend to iteration coordinates.
 
     Returns
     -------
@@ -58,34 +61,42 @@ def format_iteration_coordinate(coord):
         coord_str = iteration_number_separator.join(iter_str)
         iteration_coordinate.append(coord_str)
 
-    return ':'.join(["rank%d" % coord[0], separator.join(iteration_coordinate)])
+    if prefix:
+        prefix = "%s_rank%d" % (prefix, coord[0])
+    else:
+        prefix = "rank%d" % (coord[0])
+
+    return ':'.join([prefix, separator.join(iteration_coordinate)])
 
 
-def is_valid_sqlite3_db(filename):
+def check_valid_sqlite3_db(filename):
     """
-    Return true if the given filename contains a valid SQLite3 database file.
+    Raise an IOError if the given filename does not reference a valid SQLite3 database file.
 
     Parameters
     ----------
     filename : str
         The path to the file to be tested
 
-    Returns
-    -------
-    bool :
-        True if the filename specifies a valid SQlite3 database.
-
+    Raises
+    ------
+    IOError
+        If the given filename does not reference a valid SQLite3 database file.
     """
+    # check that the file exists
     if not os.path.isfile(filename):
-        return False
-    if os.path.getsize(filename) < 100:
-        # SQLite database file header is 100 bytes
-        return False
+        raise IOError('File does not exist({0})'.format(filename))
 
+    # check that the file is large enough (SQLite database file header is 100 bytes)
+    if os.path.getsize(filename) < 100:
+        raise IOError('File does not contain a valid sqlite database ({0})'.format(filename))
+
+    # check that the first 100 bytes actually contains a valid SQLite database header
     with open(filename, 'rb') as fd:
         header = fd.read(100)
 
-    return header[:16] == b'SQLite format 3\x00'
+    if header[:16] != b'SQLite format 3\x00':
+        raise IOError('File does not contain a valid sqlite database ({0})'.format(filename))
 
 
 def check_path(path, includes, excludes, include_all_path=False):
@@ -127,6 +138,58 @@ def check_path(path, includes, excludes, include_all_path=False):
     return False
 
 
+def json_to_np_array(vals, abs2meta):
+    """
+    Convert from a JSON string to a numpy named array.
+
+    Parameters
+    ----------
+    vals : string
+        json string of data
+    abs2meta : dict
+        Dictionary mapping absolute variable names to variable metadata.
+
+    Returns
+    -------
+    array: numpy named array
+        named array containing the same names and values as the input values json string.
+    """
+    json_vals = json.loads(vals)
+    if json_vals is None:
+        return None
+
+    for var in json_vals:
+        json_vals[var] = convert_to_np_array(json_vals[var], var, abs2meta[var]['shape'])
+
+    return values_to_array(json_vals)
+
+
+def convert_to_np_array(val, varname, shape):
+    """
+    Convert list to numpy array.
+
+    Parameters
+    ----------
+    val : list
+        the list to be converted to an np.array
+    varname : str
+        name of variable to be converted
+    shape : tuple
+        the shape of the resulting np.array
+
+    Returns
+    -------
+    numpy.array :
+        The converted array.
+    """
+    if isinstance(val, list):
+        array = np.array(val)
+        array = np.resize(array, shape)
+        return array
+
+    return val
+
+
 def values_to_array(values):
     """
     Convert a dict of variable names and values into a numpy named array.
@@ -144,7 +207,7 @@ def values_to_array(values):
     if values:
         dtype_tuples = []
         for name, value in iteritems(values):
-            tple = (name, '{}f8'.format(value.shape))
+            tple = (str(name), '{}f8'.format(value.shape))
             dtype_tuples.append(tple)
 
         array = np.zeros((1,), dtype=dtype_tuples)

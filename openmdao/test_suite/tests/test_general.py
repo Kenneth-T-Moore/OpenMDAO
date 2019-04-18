@@ -4,14 +4,12 @@ To test more than one option, pass in an Iterable of requested options.
 All Parametric Groups
 ---------------------
 'group_type': Controls which type of ParametricGroups to test. Will test all groups if not specified
-'vector_class': One of ['default', 'petsc'], which vector class to use for the problem. ('default')
+'local_vector_class': One of ['default', 'petsc'], which local vector class to use for the problem. ('default')
 'assembled_jac': bool. If an assembled jacobian should be used. (True)
-'jacobian_type': One of ['matvec', 'dense', 'sparse-coo', 'sparse-csr', 'sparse-csc']. How the Jacobians are used.
+'jacobian_type': One of ['matvec', 'dense', 'sparse-csc']. How the Jacobians are used.
                  Controls the type of AssembledJacobian. ('matvec')
                     - 'matvec': Uses compute_jacvec_product.
                     - 'dense': Uses an ndarray.
-                    - 'sparse-coo': Uses a COOrdinate format sparse matrix.
-                    - 'sparse-csr': Uses a Compressed Sparse Row sparse format.
                     - 'sparse-csc': Uses a Compressed Sparse Col sparse format.
 
 CycleGroup ('group_type': 'cycle')
@@ -23,7 +21,9 @@ CycleGroup ('group_type': 'cycle')
                     - 'array': Uses an ndarray.
                     - 'sparse': Uses the Scipy CSR sparse format.
                     - 'aij': Uses the [values, rows, cols] format.
-'finite_difference': bool. If derivatives should be approximated with finite differences.
+'partial_method': str. How derivatives should be solved.
+            Approximated with finite differences, (fd, cs) OR
+            solved for analytically, (exact).
 'num_comp': int. Number of components to use. Must be at least 2. (2)
 'num_var': int. Number of variables to use per component. Must be at least 1. (3)
 'var_shape': tuple(int). Shape to use for each variable. (2, 3).
@@ -51,7 +51,7 @@ class ParameterizedTestCases(unittest.TestCase):
             actual = {key: problem[key] for key in iterkeys(expected_values)}
             assert_rel_error(self, actual, expected_values, 1e-8)
 
-        error_bound = 1e-4 if root.metadata['finite_difference'] else 1e-8
+        error_bound = 1e-4 if root.options['partial_method'] != 'exact' else 1e-8
 
         expected_totals = root.expected_totals
         if expected_totals:

@@ -36,12 +36,17 @@ single: mock redbaron matplotlib touch build
 # build it all over again (note: make all == make html)
 all html: make_srcdocs mock redbaron matplotlib tagg buildall post_remove
 
+# build it all on CI machines; all warnings are raised as errors.
+travis: make_srcdocs mock redbaron matplotlib tagg buildalltravis post_remove
+
 clean:
 	rm -rf $(BUILDDIR)/*
 	rm -rf _srcdocs/*
 	rm -rf tags
 	rm -rf tmp
 	rm -rf make_sourcedocs
+	rm -rf doc_plot_*.png
+	rm -rf *.html
 
 help:
 	@echo "Please use 'make <target>' where <target> is one of"
@@ -60,6 +65,10 @@ build:
 
 buildall:
 	$(SPHINXBUILD) -a -b html $(ALLSPHINXOPTS) $(BUILDDIR)/html
+	@echo "Build finished. The HTML pages are in $(BUILDDIR)/html."
+
+buildalltravis:
+	$(SPHINXBUILD) -a -W -b html $(ALLSPHINXOPTS) $(BUILDDIR)/html
 	@echo "Build finished. The HTML pages are in $(BUILDDIR)/html."
 
 touch:

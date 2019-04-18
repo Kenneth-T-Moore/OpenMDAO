@@ -55,34 +55,6 @@ class FanOutGrouped(Group):
         self.connect('sub.c3.y', 'c3.x')
 
 
-class FanOutGroupedVarSets(Group):
-    """
-    Topology where one component broadcasts an output to two target
-    components. Variables are in different var sets.
-    """
-
-    def __init__(self):
-        super(FanOutGroupedVarSets, self).__init__()
-
-        self.add_subsystem('iv', IndepVarComp('x', 1.0))
-        self.add_subsystem('c1', ExecComp('y=3.0*x', x={'var_set': 2}))
-
-        self.sub = self.add_subsystem('sub', ParallelGroup())
-        self.sub.add_subsystem('c2', ExecComp('y=-2.0*x', x={'var_set': 2}))
-        self.sub.add_subsystem('c3', ExecComp('y=5.0*x', x={'var_set': 3}))
-
-        self.add_subsystem('c2', ExecComp('y=x', x={'var_set': 2}))
-        self.add_subsystem('c3', ExecComp('y=x', x={'var_set': 3}))
-
-        self.connect('iv.x', 'c1.x')
-
-        self.connect('c1.y', 'sub.c2.x')
-        self.connect('c1.y', 'sub.c3.x')
-
-        self.connect('sub.c2.y', 'c2.x')
-        self.connect('sub.c3.y', 'c3.x')
-
-
 class FanIn(Group):
     """
     Topology where two comps feed a single comp.
@@ -226,7 +198,7 @@ class Diamond(Group):
 class ConvergeDivergeFlat(Group):
     """
     Topology one - two - one - two - one. This model was critical in
-    testing parallel reverse scatters. Thi version is perfectly flat.
+    testing parallel reverse scatters. This version is perfectly flat.
     """
 
     def __init__(self):

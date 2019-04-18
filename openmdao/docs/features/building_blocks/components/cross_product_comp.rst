@@ -1,11 +1,15 @@
 
 .. _crossproductcomp_feature:
 
+.. meta::
+   :description: OpenMDAO Feature doc for CrossProductComp, which performs a cross product on two inputs
+   :keywords: cross product, CrossProductComp
+
 ================
 CrossProductComp
 ================
 
-`CrossProductComp` performs a cross-product between two 3-vector inputs.  It may be vectorized to provide the result at one or more points simultaneously.
+`CrossProductComp` performs a cross product between two 3-vector inputs.  It may be vectorized to provide the result at one or more points simultaneously.
 
 .. math::
 
@@ -20,16 +24,21 @@ of OpenMDAO allow the incoming connection to have shape `(3,)` when `vec_size` i
 the storage order of the underlying data is the same.  The output vector `c` of
 CrossProductComp will always have shape `(vec_size, 3)`.
 
+CrossProductComp Options
+------------------------
+
 Options for CrossProductComp allow the user to rename the input variables :math:`a` and :math:`b`
 and the output :math:`c`, as well as specifying their units.
-
 
 .. embed-options::
     openmdao.components.cross_product_comp
     CrossProductComp
-    metadata
+    options
 
-In the following example DotProductComp is used to compute torque as the
+CrossProductComp Example
+------------------------
+
+In the following example CrossProductComp is used to compute torque as the
 cross product of force (:math:`F`) and radius (:math:`r`) at 100 points simultaneously.
 Note the use of `a_name`, `b_name`, and `c_name` to assign names to the inputs and outputs.
 Units are assigned using `a_units`, `b_units`, and `c_units`.
@@ -38,3 +47,5 @@ with `a_units` and `b_units`.
 
 .. embed-code::
     openmdao.components.tests.test_cross_product_comp.TestForDocs.test
+
+.. tags:: CrossProductComp, Component

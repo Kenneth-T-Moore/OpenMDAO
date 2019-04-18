@@ -135,7 +135,7 @@ class AMIEGO_driver(Driver):
         # User can specify a subset of integer constraints.
         self.int_con = None
 
-    def _setup_driver(self, problem, assemble_var_info=True):
+    def _setup_driver(self, problem):
         """
         Prepare the driver for execution.
 
@@ -145,10 +145,8 @@ class AMIEGO_driver(Driver):
         ----------
         problem : <Problem>
             Pointer to the containing problem.
-        assemble_var_info : bool
-            If True, then gather all the designvars, objectives, and constraints from the model.
         """
-        super(AMIEGO_driver, self)._setup_driver(problem, assemble_var_info)
+        super(AMIEGO_driver, self)._setup_driver(problem)
 
         # Need to clean out anything in the continuous optimizer first.
         cont_opt = self.cont_opt
@@ -237,7 +235,28 @@ class AMIEGO_driver(Driver):
             cont_opt._cons[name] = con
 
         # Finish setting up the subdrivers.
-        cont_opt._setup_driver(problem, assemble_var_info=False)
+        cont_opt._setup_driver(problem)
+
+    def _update_voi_meta(self, model):
+        """
+        Collect response and design var metadata from the model and size desvars and responses.
+
+        Parameters
+        ----------
+        model : System
+            The System that represents the entire model.
+
+        Returns
+        -------
+        int
+            Total size of responses, with linear constraints excluded.
+        int
+            Total size of design vars.
+        """
+        _ = self.cont_opt._update_voi_meta(model)
+        _ = self.minlp._update_voi_meta(model)
+        return super(AMIEGO_driver, self)._update_voi_meta(model)
+
 
     def run(self):
         """

@@ -65,7 +65,7 @@ class Matrix(object):
         """
         self._submats[key] = (info, (irow, icol), src_indices, shape, factor)
 
-    def _build(self, num_rows, num_cols):
+    def _build(self, num_rows, num_cols, in_ranges, out_ranges):
         """
         Allocate the matrix.
 
@@ -75,6 +75,10 @@ class Matrix(object):
             number of rows in the matrix.
         num_cols : int
             number of cols in the matrix.
+        in_ranges : dict
+            Maps input var name to column range.
+        out_ranges : dict
+            Maps output var name to row range.
         """
         pass
 
@@ -108,6 +112,32 @@ class Matrix(object):
         -------
         ndarray[:]
             vector resulting from the product.
+        """
+        pass
+
+    def _pre_update(self):
+        """
+        Do anything that needs to be done at the beginning of AssembledJacobian._update.
+        """
+        pass
+
+    def _post_update(self):
+        """
+        Do anything that needs to be done at the end of AssembledJacobian._update.
+        """
+        pass
+
+    def set_complex_step_mode(self, active):
+        """
+        Turn on or off complex stepping mode.
+
+        When turned on, the value in each subjac is cast as complex, and when turned
+        off, they are returned to real values.
+
+        Parameters
+        ----------
+        active : bool
+            Complex mode flag; set to True prior to commencing complex step.
         """
         pass
 

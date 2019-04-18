@@ -1,7 +1,6 @@
 """Define the LinearRunOnce class."""
+
 from openmdao.solvers.linear.linear_block_gs import LinearBlockGS
-from openmdao.recorders.recording_iteration_stack import Recording
-from openmdao.jacobians.assembled_jacobian import AssembledJacobian
 
 
 class LinearRunOnce(LinearBlockGS):
@@ -25,48 +24,27 @@ class LinearRunOnce(LinearBlockGS):
             'fwd' or 'rev'.
         rel_systems : set of str
             Names of systems relevant to the current solve.
-
-        Returns
-        -------
-        float
-            Initial error.
-        float
-            Error at the first iteration.
         """
         self._vec_names = vec_names
         self._mode = mode
         self._rel_systems = rel_systems
-        system = self._system
 
-        if isinstance(system._jacobian, AssembledJacobian):
-            raise RuntimeError("A block linear solver '%s' is being used with "
-                               "an AssembledJacobian in system '%s'" %
-                               (self.SOLVER, self._system.pathname))
+        self._update_rhs_vecs()
 
-        # Pre-processing
-        if self._mode == 'fwd':
-            b_vecs = system._vectors['residual']
-        else:  # rev
-            b_vecs = system._vectors['output']
-
-        for vec_name in self._vec_names:
-            if vec_name in system._rel_vec_names:
-                self._rhs_vecs[vec_name].set_vec(b_vecs[vec_name])
-
-        with Recording('LinearRunOnce', 0, self) as rec:
-            # Single iteration of GS
-            self._iter_execute()
-
-            rec.abs = 0.0
-            rec.rel = 0.0
-
-        return False, 0.0, 0.0
+        # Single iteration of GS
+        self._single_iteration()
 
     def _declare_options(self):
         """
         Declare options before kwargs are processed in the init method.
         """
-        # changing the default maxiter from the base class
-        self.options.declare('maxiter', default=0, values=(0,),
-                             desc='maximum number of iterations '
-                                  '(this solver does not iterate)')
+        super(LinearRunOnce, self)._declare_options()
+
+        # Remove unused options from base options here, so that users
+        # attempting to set them will get KeyErrors.
+        self.options.undeclare("atol")
+        self.options.undeclare("rtol")
+
+        # this solver does not iterate
+        self.options.undeclare("maxiter")
+        self.options.undeclare("err_on_maxiter")

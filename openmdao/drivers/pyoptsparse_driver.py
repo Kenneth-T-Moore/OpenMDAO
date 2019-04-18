@@ -5,15 +5,14 @@ pyoptsparse is based on pyOpt, which is an object-oriented framework for
 formulating and solving nonlinear constrained optimization problems, with
 additional MPI capability.
 """
-
 from __future__ import print_function
-from collections import OrderedDict
-import traceback
-import sys
-import warnings
-import json
 
-from six import iteritems, itervalues, string_types
+from collections import OrderedDict
+import json
+import sys
+import traceback
+
+from six import iteritems, itervalues, string_types, reraise
 
 import numpy as np
 from scipy.sparse import coo_matrix
@@ -22,7 +21,6 @@ from pyoptsparse import Optimization
 
 from openmdao.core.analysis_error import AnalysisError
 from openmdao.core.driver import Driver, RecordingDebugging
-from openmdao.utils.record_util import create_local_meta
 import openmdao.utils.coloring as coloring_mod
 
 
@@ -33,34 +31,27 @@ grad_drivers = {'CONMIN', 'FSQP', 'IPOPT', 'NLPQLP',
 # names of optimizers that allow multiple objectives
 multi_obj_drivers = {'NSGA2'}
 
+# All optimizers in pyoptsparse
+optlist = ['ALPSO', 'CONMIN', 'FSQP', 'IPOPT', 'NLPQLP',
+           'NSGA2', 'PSQP', 'SLSQP', 'SNOPT', 'NLPY_AUGLAG', 'NOMAD']
 
-def _check_imports():
-    """
-    Dynamically remove optimizers we don't have.
+# All optimizers that require an initial run
+run_required = ['NSGA2', 'ALPSO']
 
-    Returns
-    -------
-    list of str
-        List of valid optimizer strings.
-    """
-    optlist = ['ALPSO', 'CONMIN', 'FSQP', 'IPOPT', 'NLPQLP',
-               'NSGA2', 'PSQP', 'SLSQP', 'SNOPT', 'NLPY_AUGLAG', 'NOMAD']
-
-    for optimizer in optlist[:]:
-        try:
-            __import__('pyoptsparse', globals(), locals(), [optimizer], 0)
-        except ImportError:
-            optlist.remove(optimizer)
-
-    return optlist
-
-
-CITATIONS = """
-@phdthesis{hwang_thesis_2015,
-  author       = {John T. Hwang},
-  title        = {A Modular Approach to Large-Scale Design Optimization of Aerospace Systems},
-  school       = {University of Michigan},
-  year         = 2015
+CITATIONS = """@article{Hwang_maud_2018
+ author = {Hwang, John T. and Martins, Joaquim R.R.A.},
+ title = "{A Computational Architecture for Coupling Heterogeneous
+          Numerical Models and Computing Coupled Derivatives}",
+ journal = "{ACM Trans. Math. Softw.}",
+ volume = {44},
+ number = {4},
+ month = jun,
+ year = {2018},
+ pages = {37:1--37:39},
+ articleno = {37},
+ numpages = {39},
+ doi = {10.1145/3182393},
+ publisher = {ACM},
 }
 """
 
@@ -85,22 +76,6 @@ class pyOptSparseDriver(Driver):
 
         two_sided_constraints
 
-    Options
-    -------
-    options['optimizer'] :  str('SLSQP')
-        Name of optimizers to use.
-    options['print_results'] :  bool(True)
-        Print pyOpt results if True
-    options['gradient method'] :  str('openmdao', 'pyopt_fd', 'snopt_fd')
-        Finite difference implementation to use ('snopt_fd' may only be used with SNOPT)
-    options['title'] :  str('Optimization using pyOpt_sparse')
-        Title of this optimization run
-    options['dynamic_simul_derivs'] : bool(False)
-        Set to True to turn on dynamic computation of simultaneous total derivative coloring.
-    options['dynamic_simul_derivs_repeats'] : int(3)
-        Set the number of compute_totals calls made during computation of simultaneous derivative
-        coloring.
-
     Attributes
     ----------
     fail : bool
@@ -112,31 +87,24 @@ class pyOptSparseDriver(Driver):
         Optional file to hot start the optimization.
     opt_settings : dict
         Dictionary for setting optimizer-specific options.
-    problem : <Problem>
-        Pointer to the containing problem.
-    supports : <OptionsDictionary>
-        Provides a consistant way for drivers to declare what features they support.
     pyopt_solution : Solution
         Pyopt_sparse solution object.
-    _cons : dict
-        Contains all constraint info.
-    _designvars : dict
-        Contains all design variable info.
     _indep_list : list
         List of design variables.
-    _objs : dict
-        Contains all objective info.
     _quantities : list
         Contains the objectives plus nonlinear constraints.
-    _responses : dict
-        Contains all response info.
     """
 
-    def __init__(self):
+    def __init__(self, **kwargs):
         """
         Initialize pyopt.
+
+        Parameters
+        ----------
+        **kwargs : dict of keyword arguments
+            Keyword arguments that will be mapped into the Driver options.
         """
-        super(pyOptSparseDriver, self).__init__()
+        super(pyOptSparseDriver, self).__init__(**kwargs)
 
         # What we support
         self.supports['inequality_constraints'] = True
@@ -150,22 +118,6 @@ class pyOptSparseDriver(Driver):
         # What we don't support yet
         self.supports['active_set'] = False
         self.supports['integer_design_vars'] = False
-
-        # User Options
-        self.options.declare('optimizer', default='SLSQP', values=_check_imports(),
-                             desc='Name of optimizers to use')
-        self.options.declare('title', default='Optimization using pyOpt_sparse',
-                             desc='Title of this optimization run')
-        self.options.declare('print_results', types=bool, default=True,
-                             desc='Print pyOpt results if True')
-        self.options.declare('gradient method', default='openmdao',
-                             values={'openmdao', 'pyopt_fd', 'snopt_fd'},
-                             desc='Finite difference implementation to use')
-        self.options.declare('dynamic_simul_derivs', default=False, types=bool,
-                             desc='Compute simultaneous derivative coloring dynamically if True')
-        self.options.declare('dynamic_simul_derivs_repeats', default=3, types=int,
-                             desc='Number of compute_totals calls during dynamic computation of '
-                                  'simultaneous derivative coloring')
 
         # The user places optimizer-specific settings in here.
         self.opt_settings = {}
@@ -186,7 +138,28 @@ class pyOptSparseDriver(Driver):
 
         self.cite = CITATIONS
 
-    def _setup_driver(self, problem, assemble_var_info=True):
+    def _declare_options(self):
+        """
+        Declare options before kwargs are processed in the init method.
+        """
+        self.options.declare('optimizer', default='SLSQP', values=optlist,
+                             desc='Name of optimizers to use')
+        self.options.declare('title', default='Optimization using pyOpt_sparse',
+                             desc='Title of this optimization run')
+        self.options.declare('print_results', types=bool, default=True,
+                             desc='Print pyOpt results if True')
+        self.options.declare('gradient method', default='openmdao',
+                             values={'openmdao', 'pyopt_fd', 'snopt_fd'},
+                             desc='Finite difference implementation to use')
+        self.options.declare('dynamic_derivs_sparsity', default=False, types=bool,
+                             desc='Compute derivative sparsity dynamically if True')
+        self.options.declare('dynamic_simul_derivs', default=False, types=bool,
+                             desc='Compute simultaneous derivative coloring dynamically if True')
+        self.options.declare('dynamic_derivs_repeats', default=3, types=int,
+                             desc='Number of compute_totals calls during dynamic computation of '
+                                  'simultaneous derivative coloring or derivatives sparsity')
+
+    def _setup_driver(self, problem):
         """
         Prepare the driver for execution.
 
@@ -196,10 +169,8 @@ class pyOptSparseDriver(Driver):
         ----------
         problem : <Problem>
             Pointer to the containing problem.
-        assemble_var_info : bool
-            If True, then gather all the designvars, objectives, and constraints from the model.
         """
-        super(pyOptSparseDriver, self)._setup_driver(problem, assemble_var_info)
+        super(pyOptSparseDriver, self)._setup_driver(problem)
 
         self.supports['gradients'] = self.options['optimizer'] in grad_drivers
 
@@ -231,22 +202,26 @@ class pyOptSparseDriver(Driver):
         fwd = problem._mode == 'fwd'
         optimizer = self.options['optimizer']
 
-        # Metadata Setup
-        self.metadata = create_local_meta(optimizer)
-
-        # Only need initial run if we have linear constraints.
+        # Only need initial run if we have linear constraints or if we are using an optimizer that
+        # doesn't perform one initially.
         con_meta = self._cons
-        if np.any([con['linear'] for con in itervalues(self._cons)]):
-            with RecordingDebugging(optimizer, self.iter_count, self) as rec:
+        model_ran = False
+        if optimizer in run_required or np.any([con['linear'] for con in itervalues(self._cons)]):
+            with RecordingDebugging(self._get_name(), self.iter_count, self) as rec:
                 # Initial Run
-                model._solve_nonlinear()
+                model.run_solve_nonlinear()
                 rec.abs = 0.0
                 rec.rel = 0.0
+                model_ran = True
             self.iter_count += 1
 
-        # compute dynamic simul deriv coloring if option is set
-        if coloring_mod._use_sparsity and self.options['dynamic_simul_derivs']:
-            coloring_mod.dynamic_simul_coloring(self, do_sparsity=True)
+        # compute dynamic simul deriv coloring or just sparsity if option is set
+        if coloring_mod._use_sparsity:
+            if self.options['dynamic_simul_derivs']:
+                coloring_mod.dynamic_simul_coloring(self, run_model=not model_ran,
+                                                    do_sparsity=True)
+            elif self.options['dynamic_derivs_sparsity']:
+                coloring_mod.dynamic_sparsity(self)
 
         opt_prob = Optimization(self.options['title'], self._objfunc)
 
@@ -277,7 +252,7 @@ class pyOptSparseDriver(Driver):
             # do it for us and we'll end up with a fully dense COO matrix and very slow evaluation
             # of linear constraints!
             to_remove = []
-            for oname, jacdct in iteritems(_lin_jacs):
+            for jacdct in itervalues(_lin_jacs):
                 for n, subjac in iteritems(jacdct):
                     if isinstance(subjac, np.ndarray):
                         # we can safely use coo_matrix to automatically convert the ndarray
@@ -348,10 +323,11 @@ class pyOptSparseDriver(Driver):
             _tmp = __import__('pyoptsparse', globals(), locals(), [optimizer], 0)
             opt = getattr(_tmp, optimizer)()
 
-        except ImportError:
+        except Exception as err:
+            # Change whatever pyopt gives us to an ImportError, give it a readable message,
+            # but raise with the original traceback.
             msg = "Optimizer %s is not available in this installation." % optimizer
-
-            raise ImportError(msg)
+            reraise(ImportError, ImportError(msg), sys.exc_info()[2])
 
         # Set optimization options
         for option, value in self.opt_settings.items():
@@ -389,6 +365,18 @@ class pyOptSparseDriver(Driver):
         # Print results
         if self.options['print_results']:
             print(sol)
+
+        # Pull optimal parameters back into framework and re-run, so that
+        # framework is left in the right final state
+        dv_dict = sol.getDVs()
+        for name in indep_list:
+            self.set_design_var(name, dv_dict[name])
+
+        with RecordingDebugging(self._get_name(), self.iter_count, self) as rec:
+            model.run_solve_nonlinear()
+            rec.abs = 0.0
+            rec.rel = 0.0
+        self.iter_count += 1
 
         # Save the most recent solution.
         self.fail = False
@@ -452,10 +440,10 @@ class pyOptSparseDriver(Driver):
             # print(dv_dict)
 
             # Execute the model
-            with RecordingDebugging(self.options['optimizer'], self.iter_count, self) as rec:
+            with RecordingDebugging(self._get_name(), self.iter_count, self) as rec:
                 self.iter_count += 1
                 try:
-                    model._solve_nonlinear()
+                    model.run_solve_nonlinear()
 
                 # Let the optimizer try to handle the error
                 except AnalysisError:
@@ -521,7 +509,7 @@ class pyOptSparseDriver(Driver):
                                                  return_format='dict')
             # Let the optimizer try to handle the error
             except AnalysisError:
-                self._problem.model._clear_iprint()
+                prob.model._clear_iprint()
                 fail = 1
                 print("AnalysisError detected. Reporting Fail=1 to pyoptsparse.")
 
@@ -578,7 +566,7 @@ class pyOptSparseDriver(Driver):
         str
             The name of the current optimizer.
         """
-        return self.options['optimizer']
+        return "pyOptSparse_" + self.options['optimizer']
 
     def _get_ordered_nl_responses(self):
         """
@@ -592,12 +580,18 @@ class pyOptSparseDriver(Driver):
         list of str
             The nonlinear response names in order.
         """
-        order = list(self._objs)
-        order.extend(n for n, meta in iteritems(self._cons) if meta['equals'] is not None
-                     and not ('linear' in meta and meta['linear']))
-        order.extend(n for n, meta in iteritems(self._cons) if meta['equals'] is None
-                     and not ('linear' in meta and meta['linear']))
-        return order
+        nl_order = list(self._objs)
+        neq_order = []
+        for n, meta in iteritems(self._cons):
+            if 'linear' not in meta or not meta['linear']:
+                if meta['equals'] is not None:
+                    nl_order.append(n)
+                else:
+                    neq_order.append(n)
+
+        nl_order.extend(neq_order)
+
+        return nl_order
 
     def _setup_tot_jac_sparsity(self):
         """

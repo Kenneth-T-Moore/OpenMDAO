@@ -1,8 +1,8 @@
 .. _defining_icomps_tutorial:
 
-*****************************************************
-Building Models with Solvers and Implicit Components 
-*****************************************************
+****************************************************
+Building Models with Solvers and Implicit Components
+****************************************************
 
 This tutorial will show you how to define implicit components and build models with them.
 We'll use a nonlinear circuit analysis example problem.
@@ -39,18 +39,18 @@ ExplicitComponents - Resistor and Diode
 
 The :code:`Resistor` and :code:`Diode` components will each compute their current, given the voltages on either side.
 These calculations are analytic functions, so we'll inherit from :ref:`ExplicitComponent <comp-type-2-explicitcomp>`.
-These components will each declare some metadata to allow you to pass in the relevant physical constants, and to
+These components will each declare some options to allow you to pass in the relevant physical constants, and to
 allow you to give some reasonable default values.
 
 .. embed-code::
-     openmdao.test_suite.test_examples.test_circuit_analysis.Resistor
+     openmdao.test_suite.scripts.circuit_analysis.Resistor
 
 .. embed-code::
-     openmdao.test_suite.test_examples.test_circuit_analysis.Diode
+     openmdao.test_suite.scripts.circuit_analysis.Diode
 
 .. note::
-    Since we've provided default values for the metadata, they won't be required arguments when instantiating :code:`Resistor` or :code:`Diode`.
-    Check out the :ref:`Features <Features>` section for more details on how to use :ref:`component metadata <component_metadata>`.
+    Since we've provided default values for the options, they won't be required arguments when instantiating :code:`Resistor` or :code:`Diode`.
+    Check out the :ref:`Features <Features>` section for more details on how to use :ref:`component options <component_options>`.
 
 
 ImplicitComponent - Node
@@ -64,12 +64,21 @@ Notice that we still define *V* as an output of the :code:`Node` component, albe
 
 
 .. embed-code::
-     openmdao.test_suite.test_examples.test_circuit_analysis.Node
+     openmdao.test_suite.scripts.circuit_analysis.Node
 
-All implicit components must define the :code:`apply_nonlinear` method,
-but it is not a requirement that every :ref:`ImplicitComponent <comp-type-3-implicitcomp>`  define the :code:`solve_nonlinear` method.
-In fact, for the :code:`Node` component, it is not even possible to define a :code:`solve_nonlinear` because *V* does not show up directly
-in the residual function.
+Every state variable must have exactly one corresponding residual which is defined in the :code:`apply_nonlinear` method. The :code:`residuals` equations 
+in an implicit component are not analogous to the :code:`outputs` equations in the :code:`compute` method of an explicit component. 
+Instead of defining an explicit equation for the output, :code:`residuals['example_output']` defines an equation for the residual *associated with* the 
+output (state variable) :code:`example_output`. In our example, :code:`residuals['V']` defines the equation of the residual associated with the state variable *V*. There will be no explicit 
+equation defining *V*, instead, the residual equation sums the currents associated with *V* so the sum can be driven to zero. 
+
+An implicit component varies its outputs (state variables, in this case *V*) to drive the residual equation to zero. In our model, *V* does not show up directly in the residual 
+equation. Instead, our explicit components :code:`Resistor` and :code:`Diode` create a dependence of the currents on *V*, so by using a solver on a higher level of the model 
+hierarchy, we can vary *V* to have an effect on current, and we can drive the residuals to zero. 
+
+All implicit components must define the :code:`apply_nonlinear` method, but it is not a requirement that every :ref:`ImplicitComponent <comp-type-3-implicitcomp>`  define the 
+:code:`solve_nonlinear` method. (The :code:`solve_nonlinear` method provides a way to explicitly define an output within an implicit component.) In fact, for the :code:`Node` 
+component, it is not even possible to define a :code:`solve_nonlinear` because *V* does not show up directly in the residual function.
 So the implicit function represented by instances of the :code:`Node` component must be converged at a higher level in the model hierarchy.
 
 There are cases where it is possible, and even advantageous, to define the :code:`solve_nonlinear` method.
@@ -152,7 +161,7 @@ but you need to be careful about the :ref:`execution order <feature_set_order>` 
 
 .. note::
 
-    For this case, we used the :ref:`ArmijoGoldsteinLS <feature_amijo_goldstein>`, which basically limits step sizes so that the residual always goes down.
+    For this case, we used the :ref:`ArmijoGoldsteinLS <feature_armijo_goldstein>`, which basically limits step sizes so that the residual always goes down.
     For many problems you might want to use :ref:`BoundsEnforceLS <feature_bounds_enforce>` instead, which only activates the
     line search to enforce upper and lower bounds on the outputs in the model.
 

@@ -42,7 +42,7 @@ initial point.
 
 With "scalar" bounds enforcement, only the variables that violate their bounds are pulled back to feasible values; the
 remaining values are kept at the Newton-stepped point. This changes the direction of the backtracking vector so that
-it still moves in the direction of the initial point.
+it still moves in the direction of the initial point. This is the default bounds enforcement for `BoundsEnforceLS`.
 
 .. image:: BT2.jpg
 
@@ -88,3 +88,5 @@ Here are a few examples of this option:
 .. embed-code::
     openmdao.solvers.linesearch.tests.test_backtracking.TestFeatureLineSearch.test_feature_boundscheck_wall
     :layout: interleave
+
+.. tags:: Solver

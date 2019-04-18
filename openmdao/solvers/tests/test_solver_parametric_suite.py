@@ -10,8 +10,6 @@ from openmdao.core.group import Group
 from openmdao.core.problem import Problem
 from openmdao.core.implicitcomponent import ImplicitComponent
 from openmdao.utils.assert_utils import assert_rel_error
-from openmdao.jacobians.assembled_jacobian import DenseJacobian, COOJacobian, \
-                                                  CSRJacobian, CSCJacobian
 from openmdao.solvers.nonlinear.newton import NewtonSolver
 from openmdao.solvers.linear.direct import DirectSolver
 from openmdao.test_suite.groups.implicit_group import TestImplicitGroup
@@ -24,8 +22,8 @@ class ImplComp4Test(ImplicitComponent):
         self.add_input('x', np.ones(2))
         self.add_output('y', np.ones(2))
         self.mtx = np.array([
-            [ 3., 4.],
-            [ 2., 3.],
+            [3., 4.],
+            [2., 3.],
         ])
         # Inverse is
         # [ 3.,-4.],
@@ -49,31 +47,15 @@ class TestLinearSolverParametricSuite(unittest.TestCase):
         """
         Test the direct solver on a component.
         """
-        for jac in ['dict', 'coo', 'csr', 'csc', 'dense']:
+        for jac in [None, 'csc', 'dense']:
             prob = Problem(model=ImplComp4Test())
             prob.model.nonlinear_solver = NewtonSolver()
-            prob.model.linear_solver = DirectSolver()
+            if jac in ('csc', 'dense'):
+                prob.model.options['assembled_jac_type'] = jac
+            prob.model.linear_solver = DirectSolver(assemble_jac=jac in ('csc','dense'))
             prob.set_solver_print(level=0)
 
-            if jac == 'dict':
-                pass
-            elif jac == 'csr':
-                prob.model.jacobian = CSRJacobian()
-            elif jac == 'csc':
-                prob.model.jacobian = CSCJacobian()
-            elif jac == 'coo':
-                prob.model.jacobian = COOJacobian()
-            elif jac == 'dense':
-                prob.model.jacobian = DenseJacobian()
-
             prob.setup(check=False)
-
-            if jac == 'coo':
-                with self.assertRaises(Exception) as context:
-                    prob.run_model()
-                self.assertEqual(str(context.exception),
-                                 "Direct solver is not compatible with matrix type COOMatrix in system ''.")
-                continue
 
             prob.run_model()
             assert_rel_error(self, prob['y'], [-1., 1.])
@@ -83,13 +65,13 @@ class TestLinearSolverParametricSuite(unittest.TestCase):
             d_residuals.set_const(2.0)
             d_outputs.set_const(0.0)
             prob.model.run_solve_linear(['linear'], 'fwd')
-            result = d_outputs.get_data()
+            result = d_outputs._data
             assert_rel_error(self, result, [-2., 2.])
 
             d_outputs.set_const(2.0)
             d_residuals.set_const(0.0)
             prob.model.run_solve_linear(['linear'], 'rev')
-            result = d_residuals.get_data()
+            result = d_residuals._data
             assert_rel_error(self, result, [2., -2.])
 
     def test_direct_solver_group(self):
@@ -99,6 +81,9 @@ class TestLinearSolverParametricSuite(unittest.TestCase):
         prob = Problem(model=TestImplicitGroup(lnSolverClass=DirectSolver))
 
         prob.setup(check=False)
+
+        # Set this to False because we have matrix-free component(s).
+        prob.model.linear_solver.options['assemble_jac'] = False
 
         # Conclude setup but don't run model.
         prob.final_setup()
@@ -111,18 +96,15 @@ class TestLinearSolverParametricSuite(unittest.TestCase):
         d_outputs.set_const(0.0)
         prob.model.run_solve_linear(['linear'], 'fwd')
         result = d_outputs._data
-        assert_rel_error(self, result[1], prob.model.expected_solution[0], 1e-15)
-        assert_rel_error(self, result[5], prob.model.expected_solution[1], 1e-15)
+        assert_rel_error(self, result, prob.model.expected_solution, 1e-15)
 
         d_outputs.set_const(1.0)
         d_residuals.set_const(0.0)
         prob.model.run_solve_linear(['linear'], 'rev')
         result = d_residuals._data
-        assert_rel_error(self, result[1], prob.model.expected_solution[0], 1e-15)
-        assert_rel_error(self, result[5], prob.model.expected_solution[1], 1e-15)
+        assert_rel_error(self, result, prob.model.expected_solution, 1e-15)
 
     @parametric_suite(
-        vector_class=['default'],
         assembled_jac=[False, True],
         jacobian_type=['dense'],
         partial_type=['array', 'sparse', 'aij'],
@@ -133,7 +115,7 @@ class TestLinearSolverParametricSuite(unittest.TestCase):
     )
     def test_subset(self, param_instance):
         param_instance.linear_solver_class = DirectSolver
-        param_instance.linear_solver_options['maxiter'] = 0
+        param_instance.linear_solver_options = {}  # defaults not valid for DirectSolver
 
         param_instance.setup()
         problem = param_instance.problem

@@ -11,7 +11,6 @@ except ImportError:
 
 from openmdao.solvers.solver import LinearSolver
 from openmdao.utils.general_utils import warn_deprecation
-from openmdao.recorders.recording_iteration_stack import Recording
 
 KSP_TYPES = [
     "richardson",
@@ -150,12 +149,9 @@ class Monitor(object):
         norm : float
             the norm.
         """
-        with Recording('PETScKrylov', self._solver._iter_count, self._solver) as rec:
-            if counter == 0 and norm != 0.0:
-                self._norm0 = norm
-            self._norm = norm
-            rec.abs = self._norm
-            rec.rel = self._norm / self._norm0
+        if counter == 0 and norm != 0.0:
+            self._norm0 = norm
+        self._norm = norm
 
         self._solver._mpi_print(counter, norm, norm / self._norm0)
         self._solver._iter_count += 1
@@ -164,11 +160,6 @@ class Monitor(object):
 class PETScKrylov(LinearSolver):
     """
     LinearSolver that uses PetSC KSP to solve for a system's derivatives.
-
-    Options
-    -------
-    options['ksp_type'] :  str
-        KSP algorithm to use. Default is 'fgmres'.
 
     Attributes
     ----------
@@ -204,6 +195,8 @@ class PETScKrylov(LinearSolver):
         """
         Declare options before kwargs are processed in the init method.
         """
+        super(PETScKrylov, self)._declare_options()
+
         self.options.declare('ksp_type', default='fgmres', values=KSP_TYPES,
                              desc="KSP algorithm to use. Default is 'fgmres'.")
 
@@ -216,6 +209,16 @@ class PETScKrylov(LinearSolver):
 
         # changing the default maxiter from the base class
         self.options['maxiter'] = 100
+
+    def _assembled_jac_solver_iter(self):
+        """
+        Return a generator of linear solvers using assembled jacs.
+        """
+        if self.options['assemble_jac']:
+            yield self
+        if self.precon is not None:
+            for s in self.precon._assembled_jac_solver_iter():
+                yield s
 
     def _setup_solvers(self, system, depth):
         """
@@ -286,14 +289,15 @@ class PETScKrylov(LinearSolver):
             b_vec = system._vectors['output'][vec_name]
 
         # set value of x vector to KSP provided value
-        x_vec.set_data(_get_petsc_vec_array(in_vec))
+        x_vec._data[:] = _get_petsc_vec_array(in_vec)
 
         # apply linear
         scope_out, scope_in = system._get_scope()
-        system._apply_linear([vec_name], self._rel_systems, self._mode, scope_out, scope_in)
+        system._apply_linear(self._assembled_jac, [vec_name], self._rel_systems, self._mode,
+                             scope_out, scope_in)
 
         # stuff resulting value of b vector into result for KSP
-        b_vec.get_data(result.array)
+        result.array[:] = b_vec._data
 
     def _linearize_children(self):
         """
@@ -328,15 +332,6 @@ class PETScKrylov(LinearSolver):
             Derivative mode, can be 'fwd' or 'rev'.
         rel_systems : set of str
             Names of systems relevant to the current solve.
-
-        Returns
-        -------
-        boolean
-            Failure flag; True if failed to converge, False is successful.
-        float
-            absolute error.
-        float
-            relative error.
         """
         self._vec_names = vec_names
         self._rel_systems = rel_systems
@@ -344,6 +339,10 @@ class PETScKrylov(LinearSolver):
 
         system = self._system
         options = self.options
+
+        if self._system.under_complex_step:
+            msg = 'PETScKrylov solver is not supported under complex step.'
+            raise RuntimeError(msg)
 
         maxiter = options['maxiter']
         atol = options['atol']
@@ -362,8 +361,8 @@ class PETScKrylov(LinearSolver):
                 b_vec = system._vectors['output'][vec_name]
 
             # create numpy arrays to interface with PETSc
-            sol_array = x_vec.get_data()
-            rhs_array = b_vec.get_data()
+            sol_array = x_vec._data.copy()
+            rhs_array = b_vec._data.copy()
 
             # create PETSc vectors from numpy arrays
             sol_petsc_vec = PETSc.Vec().createWithArray(sol_array, comm=system.comm)
@@ -376,11 +375,9 @@ class PETScKrylov(LinearSolver):
             ksp.solve(rhs_petsc_vec, sol_petsc_vec)
 
             # stuff the result into the x vector
-            x_vec.set_data(sol_array)
+            x_vec._data[:] = sol_array
 
             sol_petsc_vec = rhs_petsc_vec = None
-
-        return False, 0., 0.
 
     def apply(self, mat, in_vec, result):
         """
@@ -412,7 +409,7 @@ class PETScKrylov(LinearSolver):
                 b_vec = system._vectors['output'][vec_name]
 
             # set value of b vector to KSP provided value
-            b_vec.set_data(_get_petsc_vec_array(in_vec))
+            b_vec._data[:] = _get_petsc_vec_array(in_vec)
 
             # call the preconditioner
             self._solver_info.append_precon()
@@ -420,7 +417,7 @@ class PETScKrylov(LinearSolver):
             self._solver_info.pop()
 
             # stuff resulting value of x vector into result for KSP
-            x_vec.get_data(result.array)
+            result.array[:] = x_vec._data
         else:
             # no preconditioner, just pass back the incoming vector
             result.array[:] = _get_petsc_vec_array(in_vec)

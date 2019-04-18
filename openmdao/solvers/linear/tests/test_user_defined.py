@@ -17,6 +17,7 @@ try:
 except ImportError:
     PETScVector = None
 
+
 class DistribStateImplicit(ImplicitComponent):
 
     def setup(self):
@@ -108,19 +109,12 @@ class DistribStateImplicit(ImplicitComponent):
             unscaled, dimensional quantities read via d_residuals[key]
         mode : str
             either 'fwd' or 'rev'
-
-        Returns
-        -------
-        None or bool or (bool, float, float)
-            The bool is the failure flag; and the two floats are absolute and relative error.
         """
         # Note: we are just preconditioning with Identity as a proof of concept.
         if mode == 'fwd':
             d_outputs.set_vec(d_residuals)
         elif mode == 'rev':
             d_residuals.set_vec(d_outputs)
-
-        return False, 0., 0.
 
 
 @unittest.skipUnless(PETScVector, "PETSc is required.")
@@ -138,7 +132,7 @@ class TestUserDefinedSolver(unittest.TestCase):
         model.linear_solver = PETScKrylov()
         model.linear_solver.precon = LinearRunOnce()
 
-        p.setup(vector_class=PETScVector, mode='rev', check=False)
+        p.setup(mode='rev', check=False)
         p.run_model()
         jac = p.compute_totals(of=['out_var'], wrt=['a'], return_format='dict')
 
@@ -148,9 +142,9 @@ class TestUserDefinedSolver(unittest.TestCase):
         # Make sure values are unscaled/dimensional.
 
         def custom_method(d_outputs, d_residuals, mode):
-            if d_outputs['out_var'][0] != 12.0:
+            # This should be -1 because the jac setter pokes a -1.0 in phys state.
+            if d_outputs['out_var'][0] != -1.0:
                 raise ValueError('This value should be unscaled.')
-            return False, 0, 0
 
 
         class ScaledComp(ImplicitComponent):
@@ -170,7 +164,7 @@ class TestUserDefinedSolver(unittest.TestCase):
 
         model.linear_solver = LinearUserDefined(custom_method)
 
-        p.setup(vector_class=PETScVector, mode='rev', check=False)
+        p.setup(mode='rev', check=False)
         p.run_model()
         jac = p.compute_totals(of=['out_var'], wrt=['a'], return_format='dict')
 
@@ -187,7 +181,7 @@ class TestUserDefinedSolver(unittest.TestCase):
         model.linear_solver = PETScKrylov()
         model.linear_solver.precon = LinearRunOnce()
 
-        p.setup(vector_class=PETScVector, mode='rev', check=False)
+        p.setup(mode='rev', check=False)
 
         model.icomp.linear_solver.precon = LinearUserDefined()
 
@@ -288,19 +282,12 @@ class TestUserDefinedSolver(unittest.TestCase):
                     unscaled, dimensional quantities read via d_residuals[key]
                 mode : str
                     either 'fwd' or 'rev'
-
-                Returns
-                -------
-                None or bool or (bool, float, float)
-                    The bool is the failure flag; and the two floats are absolute and relative error.
                 """
                 # Note: we are just preconditioning with Identity as a proof of concept.
                 if mode == 'fwd':
                     d_outputs.set_vec(d_residuals)
                 elif mode == 'rev':
                     d_residuals.set_vec(d_outputs)
-
-                return False, 0., 0.
 
         prob = Problem()
 
@@ -313,7 +300,7 @@ class TestUserDefinedSolver(unittest.TestCase):
         model.linear_solver = PETScKrylov()
         model.linear_solver.precon = LinearRunOnce()
 
-        prob.setup(vector_class=PETScVector, mode='rev', check=False)
+        prob.setup(mode='rev', check=False)
         prob.run_model()
         jac = prob.compute_totals(of=['out_var'], wrt=['a'], return_format='dict')
 

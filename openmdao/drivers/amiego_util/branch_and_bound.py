@@ -126,7 +126,7 @@ class Branch_and_Bound(Driver):
         self.load_balance = True
         self.aggressive_splitting = False
 
-    def _setup_driver(self, problem, assemble_var_info=True):
+    def _setup_driver(self, problem):
         """
         Prepare the driver for execution.
 
@@ -136,10 +136,8 @@ class Branch_and_Bound(Driver):
         ----------
         problem : <Problem>
             Pointer to the containing problem.
-        assemble_var_info : bool
-            If True, then gather all the designvars, objectives, and constraints from the model.
         """
-        super(Branch_and_Bound, self)._setup_driver(problem, assemble_var_info)
+        super(Branch_and_Bound, self)._setup_driver(problem)
 
         # Size our design variables.
         j = 0
@@ -422,6 +420,7 @@ class Branch_and_Bound(Driver):
             bits = np.ceil(np.log2(xU_iter - xL_iter + 1)).astype(int)
             bits[bits <= 0] = 1
             vub_vir = (2**bits - 1) + xL_iter
+            vlb_vir = np.ones(len(vub_vir))
 
             # More important nodes get a higher population size and number of generations.
             if nodeHist.priority_flag == 1:
@@ -436,7 +435,7 @@ class Branch_and_Bound(Driver):
             t0 = time()
             self.xU_iter = xU_iter
             xloc_iter_new, floc_iter_new, nfit = \
-                ga.execute_ga(xL_iter, vub_vir, bits, pop_size, max_gen)
+                ga.execute_ga(xL_iter, vlb_vir, vub_vir, vub_vir, bits, pop_size, max_gen, None)
             t_GA = time() - t0
 
             if floc_iter_new < floc_iter:

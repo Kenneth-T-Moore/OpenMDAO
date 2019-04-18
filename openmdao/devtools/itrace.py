@@ -33,15 +33,17 @@ _registered = False  # prevents multiple atexit registrations
 _printer = None
 
 MAXLINE = 80
-tab = '    '
+tab = '   '
 time0 = None
 
 addr_regex = re.compile(" at 0x[0-9a-fA-F]+")
 
-def _indented_print(f_locals, d, indent, excludes=set(['__init__', 'self'])):
+def _indented_print(f_locals, d, indent, excludes=set(['__init__', 'self', '__class__']),
+                    show_ptrs=False):
     """
     Print trace info, indenting based on call depth.
     """
+    global _printer
     sindent = tab * indent
     sep = '=' if d is f_locals else ':'
 
@@ -49,11 +51,14 @@ def _indented_print(f_locals, d, indent, excludes=set(['__init__', 'self'])):
         if name not in excludes:
             if isinstance(d[name], (dict, OrderedDict)):
                 f = cStringIO()
-                _indented_print(f_locals, d[name], 0, file=f)
+                save = _printer
+                _printer = _get_printer(f)
+                _indented_print(f_locals, d[name], 0, show_ptrs=show_ptrs)
+                _printer = save
                 s = "  %s%s%s{%s}" % (sindent, name, sep, f.getvalue())
             else:
                 s = "  %s%s%s%s" % (sindent, name, sep, d[name])
-            if ' object at ' in s:
+            if not show_ptrs and ' object at ' in s:
                 s = addr_regex.sub('', s)
             linelen = len(s)
             leneq = len(s.split(sep, 1)[0])
@@ -92,7 +97,8 @@ def _trace_call(frame, arg, stack, context):
     if time0 is None:
         time0 = time.time()
 
-    qual_cache, method_counts, class_counts, id2count, verbose, memory, leaks, stream = context
+    (qual_cache, method_counts, class_counts, id2count,
+     verbose, memory, leaks, stream, show_ptrs) = context
 
     funcname = find_qualified_name(frame.f_code.co_filename,
                                    frame.f_code.co_firstlineno, qual_cache)
@@ -118,10 +124,10 @@ def _trace_call(frame, arg, stack, context):
 
     indent = tab * (len(stack)-1)
     if verbose:
-        _printer("%s%s (%d)" % (indent, fullname, method_counts[fullname]))
-        _indented_print(frame.f_locals, frame.f_locals, len(stack)-1)
+        _printer("%s--> %s (%d)" % (indent, fullname, method_counts[fullname]))
+        _indented_print(frame.f_locals, frame.f_locals, len(stack)-1, show_ptrs=show_ptrs)
     else:
-        _printer("%s%s" % (indent, fullname))
+        _printer("%s-->%s" % (indent, fullname))
 
     if memory is not None:
         memory.append(mem_usage())
@@ -144,7 +150,8 @@ def _trace_return(frame, arg, stack, context):
     """
     global time0
 
-    qual_cache, method_counts, class_counts, id2count, verbose, memory, leaks, stream = context
+    (qual_cache, method_counts, class_counts, id2count,
+     verbose, memory, leaks, stream, show_ptrs) = context
     funcname = find_qualified_name(frame.f_code.co_filename,
                                    frame.f_code.co_firstlineno, qual_cache)
 
@@ -179,7 +186,7 @@ def _trace_return(frame, arg, stack, context):
     if verbose:
         if arg is not None:
             s = "%s     %s" % (indent, arg)
-            if ' object at ' in s:
+            if not show_ptrs and ' object at ' in s:
                 s = addr_regex.sub('', s)
             _printer(s)
 
@@ -209,10 +216,7 @@ def _setup(options):
         method_counts = defaultdict(int)
         class_counts = defaultdict(lambda: -1)
         id2count = {}
-        if verbose or memory or leaks:
-            do_ret = _trace_return
-        else:
-            do_ret = None
+        do_ret = _trace_return
 
         if memory:
             if psutil is None:
@@ -244,10 +248,12 @@ def _setup(options):
                                                 do_ret=do_ret,
                                                 context=(qual_cache, method_counts,
                                                          class_counts, id2count, verbose, memory,
-                                                         leaks, stream))
+                                                         leaks, stream, options.show_ptrs),
+                                                filters=options.filters)
 
 
-def setup(methods=None, verbose=None, memory=None, leaks=False, rank=-1, outfile='stdout'):
+def setup(methods=None, verbose=None, memory=None, leaks=False, rank=-1, show_ptrs=False,
+          outfile='stdout'):
     """
     Setup call tracing.
 
@@ -263,11 +269,13 @@ def setup(methods=None, verbose=None, memory=None, leaks=False, rank=-1, outfile
         If True, show objects that are created within a function and not garbage collected.
     rank : int
         MPI rank where output is desired.  The default, -1 means output from all ranks.
+    show_ptrs : bool
+        If True, show addresses of printed objects.
     outfile : file-like or str
         Output file.
     """
     _setup(_Options(methods=methods, verbose=verbose, memory=memory, leaks=leaks, rank=rank,
-                    outfile=outfile))
+                    show_ptrs=show_ptrs, outfile=outfile))
 
 
 def start():
@@ -290,7 +298,7 @@ def stop():
 
 
 @contextmanager
-def tracing(methods=None, verbose=False, memory=False, leaks=False):
+def tracing(methods=None, verbose=False, memory=False, leaks=False, filters=None, show_ptrs=False):
     """
     Turn on call tracing within a certain context.
 
@@ -305,8 +313,14 @@ def tracing(methods=None, verbose=False, memory=False, leaks=False):
         If True, show functions that increase memory usage.
     leaks : bool
         If True, show objects that are created within a function and not garbage collected.
+    filters : list of str or None
+        If not None, evaluate as an expression in the frame of matching trace functions. If
+        True, include the function in the trace.  Up to one expression per class.
+    show_ptrs : bool
+        If True, show addresses of printed objects.
     """
-    setup(methods=methods, verbose=verbose, memory=memory, leaks=leaks)
+    setup(methods=methods, verbose=verbose, memory=memory, leaks=leaks, filters=filters,
+          show_ptrs=show_ptrs)
     start()
     yield
     stop()
@@ -326,9 +340,16 @@ class tracedfunc(object):
         If True, show functions that increase memory usage.
     leaks : bool
         If True, show objects that are created within a function and not garbage collected.
+    filters : list of str or None
+        If not None, evaluate as an expression in the frame of matching trace functions. If
+        True, include the function in the trace.  Up to one expresson per class.
+    show_ptrs : bool
+        If True, show addresses of printed objects.
     """
-    def __init__(self, methods=None, verbose=False, memory=False, leaks=False):
-        self.options = _Options(methods=methods, verbose=verbose, memory=memory, leaks=leaks)
+    def __init__(self, methods=None, verbose=False, memory=False, leaks=False, filters=None,
+                 show_ptrs=False):
+        self.options = _Options(methods=methods, verbose=verbose, memory=memory, leaks=leaks,
+                                filters=filters, show_ptrs=show_ptrs)
         self._call_setup = True
 
     def __call__(self, func):
@@ -356,6 +377,8 @@ def _itrace_setup_parser(parser):
                               ' Options are: %s' % sorted(func_group.keys()))
     parser.add_argument('-v', '--verbose', action='store_true', dest='verbose',
                         help="Show function locals and return values.")
+    parser.add_argument('--ptrs', action='store_true', dest='show_ptrs',
+                        help="Show addresses of printed objects.")
     parser.add_argument('-m', '--memory', action='store_true', dest='memory',
                         help="Show memory usage.")
     parser.add_argument('-l', '--leaks', action='store_true', dest='leaks',
@@ -364,6 +387,11 @@ def _itrace_setup_parser(parser):
                         default=-1, help='MPI rank where output is desired.  Default is all ranks.')
     parser.add_argument('-o', '--outfile', action='store', dest='outfile',
                         default='stdout', help='Output file.  Defaults to stdout.')
+    parser.add_argument('-f', '--filter', action='append', dest='filters',
+                        default=[],
+                        help='An expression.  If it evaluates to True for any matching trace '
+                             'function, that function will be displayed in the trace. One '
+                             'expression can be added for each class.')
 
 
 def _itrace_exec(options):

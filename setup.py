@@ -1,8 +1,42 @@
-from distutils.core import setup
+import re
+
+from setuptools import setup
+
+
+__version__ = re.findall(
+    r"""__version__ = ["']+([0-9\.]*)["']+""",
+    open('openmdao/__init__.py').read(),
+)[0]
+
+
+optional_dependencies = {
+    'docs': [
+        'matplotlib',
+        'mock',
+        'numpydoc',
+        'redbaron',
+        'sphinx',
+    ],
+    'test': [
+        'coverage',
+        'parameterized',
+        'pycodestyle==2.3.1',
+        'pydocstyle==2.0.0',
+        'testflo>=1.3.4',
+    ],
+}
+
+# Add an optional dependency that concatenates all others
+optional_dependencies['all'] = sorted([
+    dependency
+    for dependencies in optional_dependencies.values()
+    for dependency in dependencies
+])
+
 
 setup(
     name='openmdao',
-    version='2.2.1',
+    version=__version__,
     description="OpenMDAO v2 framework infrastructure",
     long_description="""OpenMDAO is an open-source high-performance computing platform
     for systems analysis and multidisciplinary optimization, written in Python. It
@@ -10,7 +44,7 @@ setup(
     while still solving them in a tightly coupled manner with efficient parallel numerical methods.
     """,
     classifiers=[
-        'Development Status :: 3 - Alpha',
+        'Development Status :: 4 - Beta',
         'Intended Audience :: Science/Research',
         'License :: OSI Approved :: Apache Software License',
         'Natural Language :: English',
@@ -27,7 +61,7 @@ setup(
     author='OpenMDAO Team',
     author_email='openmdao@openmdao.org',
     url='http://openmdao.org',
-    download_url='http://github.com/OpenMDAO/OpenMDAO/tarball/2.2.1',
+    download_url='http://github.com/OpenMDAO/OpenMDAO/tarball/'+__version__,
     license='Apache License, Version 2.0',
     packages=[
         'openmdao',
@@ -38,7 +72,10 @@ setup(
         'openmdao.devtools',
         'openmdao.devtools.problem_viewer',
         'openmdao.devtools.iprofile_app',
+        'openmdao.devtools.xdsm_viewer',
         'openmdao.docs',
+        'openmdao.docs._exts',
+        'openmdao.docs._utils',
         'openmdao.drivers',
         'openmdao.error_checking',
         'openmdao.jacobians',
@@ -69,28 +106,35 @@ setup(
             'visualization/style/*.woff',
             'visualization/*.html'
         ],
+        'openmdao.devtools.xdsm_viewer': [
+            'XDSMjs/*',
+            'XDSMjs/src/*.js',
+            'XDSMjs/build/*.js',
+            'XDSMjs/test/*.js',
+            'XDSMjs/test/*.html',
+            'XDSMjs/examples/*.json',
+        ],
+        'openmdao.devtools.iprofile_app': [
+            'static/*.html',
+            'templates/*.html'
+        ],
         'openmdao.docs': ['*.py', '_utils/*.py'],
+        'openmdao.recorders': ['tests/legacy_sql/*.sql'],
         'openmdao.utils': ['unit_library.ini'],
-        'openmdao.test_suite': ['*.py', '*/*.py'],
+        'openmdao.test_suite': [
+            '*.py',
+            '*/*.py',
+            'matrices/*.npz'
+        ],
         'openmdao': ['*/tests/*.py', '*/*/tests/*.py', '*/*/*/tests/*.py']
     },
     install_requires=[
-        'six',
-        'numpydoc',
-        'scipy',
-        'sqlitedict',
-        'pycodestyle==2.3.1',
-        'pydocstyle==2.0.0',
-        'testflo',
-        'parameterized',
-        'pyparsing',
         'networkx>=2.0',
-        'sphinx',
-        'redbaron',
-        'mock',
-        'requests_mock',
-        'tornado',
-        'pyDOE'
+        'numpy',
+        'pyDOE2',
+        'pyparsing',
+        'scipy',
+        'six',
     ],
     # scripts=['bin/om-pylint.sh']
     entry_points="""
@@ -99,5 +143,6 @@ setup(
     webview=openmdao.devtools.webview:webview_argv
     run_test=openmdao.devtools.run_test:run_test
     openmdao=openmdao.utils.om:openmdao_cmd
-    """
+    """,
+    extras_require=optional_dependencies,
 )

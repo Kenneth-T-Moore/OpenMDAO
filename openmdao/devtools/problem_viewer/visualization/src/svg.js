@@ -1,17 +1,3 @@
-var CONNECTION_COLOR = "black",
-    UNKNOWN_IMPLICIT_COLOR = "orange",
-    UNKNOWN_EXPLICIT_COLOR = "#AAA",
-    N2_COMPONENT_BOX_COLOR = "#555",
-    N2_BACKGROUND_COLOR = "#eee",
-    N2_GRIDLINE_COLOR = "white",
-    PT_STROKE_COLOR = "#eee",
-    UNKNOWN_GROUP_COLOR = "#888",
-    PARAM_COLOR = "Plum",
-    PARAM_GROUP_COLOR = "Orchid",
-    GROUP_COLOR = "steelblue",
-    COMPONENT_COLOR = "DeepSkyBlue",
-    COLLAPSED_COLOR = "#555";
-
 function SaveSvg(parentDiv) {
     //get svg element.
     var svgData = parentDiv.querySelector("#svgId").outerHTML;
@@ -94,6 +80,12 @@ function UpdateSvgCss(svgStyleElement, FONT_SIZE_PX){
         "    font-family: helvetica, sans-serif; " +
         "    font-size: " + FONT_SIZE_PX +"px; " +
         "} " +
+        "#svgId"+" g.solver_group > text { " +
+        "    text-anchor: end; " +
+        "    pointer-events: none; " +
+        "    font-family: helvetica, sans-serif; " +
+        "    font-size: " + FONT_SIZE_PX +"px; " +
+        "} " +
         "/* n2 diagram*/  " +
         "g.component_box > rect { " +
         "    stroke: " + N2_COMPONENT_BOX_COLOR + "; " +
@@ -114,6 +106,24 @@ function UpdateSvgCss(svgStyleElement, FONT_SIZE_PX){
         ".horiz_line, .vert_line { /*n2 gridlines*/ " +
         "    stroke: " + N2_GRIDLINE_COLOR + "; " +
         "}";
+
+        for (var i = 0; i < linearSolverNames.length; ++i) {
+            var name = linearSolverNames[i];
+            myCssText +=  "g." + linearSolverClasses[name] + " > rect { " +
+            "    cursor: pointer; " +
+            "    fill-opacity: .8; " +
+            "    fill: " + linearSolverColors[name] + "; " +
+            "} " ;
+        }
+        for (var i = 0; i < nonLinearSolverNames.length; ++i) {
+            var name = nonLinearSolverNames[i];
+            myCssText +=  "g." + nonLinearSolverClasses[name] + " > rect { " +
+            "    cursor: pointer; " +
+            "    fill-opacity: .8; " +
+            "    fill: " + nonLinearSolverColors[name] + "; " +
+            "} " ;
+        }
+
 
         svgStyleElement.innerHTML = myCssText;
     }

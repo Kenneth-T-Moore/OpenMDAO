@@ -1,14 +1,15 @@
 """Define the COOmatrix class."""
 from __future__ import division, print_function
 
+from collections import Counter, defaultdict
 import numpy as np
 from numpy import ndarray
-from scipy.sparse import coo_matrix, csr_matrix
+from scipy.sparse import coo_matrix
 
 from six import iteritems
 from six.moves import range
 
-from collections import OrderedDict, Counter, defaultdict
+from collections import OrderedDict
 
 from openmdao.matrices.matrix import Matrix, _compute_index_map, sparse_types
 
@@ -22,6 +23,8 @@ class COOMatrix(Matrix):
     _mat_range_cache : dict
         Dictionary of cached CSC matrices needed for solving on a sub-range of the
         parent CSC matrix.
+    _coo : coo_matrix
+        COO matrix. Used as a basis for conversion to CSC, CSR, Dense in inherited classes.
     """
 
     def __init__(self, comm):
@@ -35,6 +38,7 @@ class COOMatrix(Matrix):
         """
         super(COOMatrix, self).__init__(comm)
         self._mat_range_cache = {}
+        self._coo = None
 
     def _build_sparse(self, num_rows, num_cols):
         """
@@ -57,7 +61,6 @@ class COOMatrix(Matrix):
         submats = self._submats
         metadata = self._metadata
         pre_metadata = self._key_ranges = OrderedDict()
-        locations = {}
 
         for key, (info, loc, src_indices, shape, factor) in iteritems(submats):
             val = info['value']
@@ -75,28 +78,17 @@ class COOMatrix(Matrix):
             else:  # list sparse format
                 delta = len(rows)
 
-            if loc in locations:
-                ind1, ind2, otherkey = locations[loc]
-                if not (src_indices is None and (ind2 - ind1) == delta == full_size):
-                    raise RuntimeError("Keys %s map to the same sub-jacobian of a CSC or "
-                                       "CSR partial jacobian and at least one of them is either "
-                                       "not dense or uses src_indices.  This can occur when "
-                                       "multiple inputs on the same "
-                                       "component are connected to the same output." %
-                                       sorted((key, otherkey)))
-            else:
-                ind1 = counter
-                counter += delta
-                ind2 = counter
-                locations[loc] = (ind1, ind2, key)
+            ind1 = counter
+            counter += delta
+            ind2 = counter
 
-            pre_metadata[key] = (ind1, ind2, dense)
+            pre_metadata[key] = (ind1, ind2, dense, rows)
 
         data = np.zeros(counter)
         rows = np.empty(counter, dtype=int)
         cols = np.empty(counter, dtype=int)
 
-        for key, (ind1, ind2, dense) in iteritems(pre_metadata):
+        for key, (ind1, ind2, dense, jrows) in iteritems(pre_metadata):
             info, loc, src_indices, shape, factor = submats[key]
             irow, icol = loc
             val = info['value']
@@ -122,14 +114,13 @@ class COOMatrix(Matrix):
                 subcols += icol
 
             else:  # sparse
-                if isinstance(val, sparse_types):
+                if jrows is None:
                     jac_type = type(val)
                     jac = val.tocoo()
                     jrows = jac.row
                     jcols = jac.col
                 else:
                     jac_type = list
-                    jrows = info['rows']
                     jcols = info['cols']
 
                 if src_indices is None:
@@ -146,7 +137,7 @@ class COOMatrix(Matrix):
 
         return data, rows, cols
 
-    def _build(self, num_rows, num_cols):
+    def _build(self, num_rows, num_cols, in_ranges, out_ranges):
         """
         Allocate the matrix.
 
@@ -156,6 +147,10 @@ class COOMatrix(Matrix):
             number of rows in the matrix.
         num_cols : int
             number of cols in the matrix.
+        in_ranges : dict
+            Maps input var name to column range.
+        out_ranges : dict
+            Maps output var name to row range.
         """
         data, rows, cols = self._build_sparse(num_rows, num_cols)
 
@@ -168,8 +163,7 @@ class COOMatrix(Matrix):
                 # update_submat.
                 metadata[key] = (np.argsort(idxs) + ind1, jac_type, factor)
 
-        self._matrix = coo_matrix((data, (rows, cols)),
-                                  shape=(num_rows, num_cols))
+        self._matrix = self._coo = coo_matrix((data, (rows, cols)), shape=(num_rows, num_cols))
 
     def _update_submat(self, key, jac):
         """
@@ -183,49 +177,18 @@ class COOMatrix(Matrix):
             the sub-jacobian, the same format with which it was declared.
         """
         idxs, jac_type, factor = self._metadata[key]
-        if not isinstance(jac, jac_type):
+        if not isinstance(jac, jac_type) and (jac_type is list and not isinstance(jac, ndarray)):
             raise TypeError("Jacobian entry for %s is of different type (%s) than "
                             "the type (%s) used at init time." % (key,
                                                                   type(jac).__name__,
                                                                   jac_type.__name__))
         if isinstance(jac, ndarray):
             self._matrix.data[idxs] = jac.flat
-        elif isinstance(jac, sparse_types):
+        else:  # sparse
             self._matrix.data[idxs] = jac.data
-        else:  # list format  [data, rows, cols]
-            self._matrix.data[idxs] = jac[0]
 
         if factor is not None:
             self._matrix.data[idxs] *= factor
-
-    def _update_add_submat(self, key, jac):
-        """
-        Add the subjac values to an existing sub-jacobian.
-
-        Parameters
-        ----------
-        key : (str, str)
-            the global output and input variable names.
-        jac : ndarray or scipy.sparse or tuple
-            the sub-jacobian, the same format with which it was declared.
-        """
-        idxs, jac_type, factor = self._metadata[key]
-        if not isinstance(jac, jac_type):
-            raise TypeError("Jacobian entry for %s is of different type (%s) than "
-                            "the type (%s) used at init time." % (key,
-                                                                  type(jac).__name__,
-                                                                  jac_type.__name__))
-        if isinstance(jac, ndarray):
-            val = jac.flatten()
-        elif isinstance(jac, sparse_types):
-            val = jac.data
-        else:  # list format  [data, rows, cols]
-            val = jac[0]
-
-        if factor is not None:
-            self._matrix.data[idxs] += val * factor
-        else:
-            self._matrix.data[idxs] += val
 
     def _prod(self, in_vec, mode, ranges, mask=None):
         """
@@ -264,6 +227,7 @@ class COOMatrix(Matrix):
                 else:
                     rstart, rend, cstart, cend = ranges
                     rmat = mat.tocoo()
+
                     # find all row and col indices that are within the desired range
                     ridxs = np.nonzero(np.logical_and(rmat.row >= rstart, rmat.row < rend))[0]
                     cidxs = np.nonzero(np.logical_and(rmat.col >= cstart, rmat.col < cend))[0]
@@ -323,7 +287,26 @@ class COOMatrix(Matrix):
             mask = np.ones(self._matrix.data.size, dtype=np.bool)
             for key, val in iteritems(self._key_ranges):
                 if key[1] in input_names:
-                    ind1, ind2, _ = val
+                    ind1, ind2, _, _ = val
                     mask[ind1:ind2] = False
 
             return mask
+
+    def set_complex_step_mode(self, active):
+        """
+        Turn on or off complex stepping mode.
+
+        When turned on, the value in each subjac is cast as complex, and when turned
+        off, they are returned to real values.
+
+        Parameters
+        ----------
+        active : bool
+            Complex mode flag; set to True prior to commencing complex step.
+        """
+        if active:
+            self._coo.data = self._coo.data.astype(np.complex)
+            self._coo.dtype = np.complex
+        else:
+            self._coo.data = self._coo.data.real
+            self._coo.dtype = np.float

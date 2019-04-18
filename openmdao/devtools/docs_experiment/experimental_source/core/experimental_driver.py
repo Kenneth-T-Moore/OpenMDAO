@@ -14,26 +14,9 @@ from openmdao.utils.mpi import MPI
 from openmdao.utils.options_dictionary import OptionsDictionary
 
 
-class Driver(object):
+class ExperimentalDriver(object):
     """
-    Top-level container for the systems and drivers.
-
-    Options
-    -------
-    recording_options['record_metadata'] :  bool(True)
-        Tells recorder whether to record variable attribute metadata.
-    recording_options['record_desvars'] :  bool(True)
-        Tells recorder whether to record the desvars of the Driver.
-    recording_options['record_responses'] :  bool(False)
-        Tells recorder whether to record the responses of the Driver.
-    recording_options['record_objectives'] :  bool(False)
-        Tells recorder whether to record the objectives of the Driver.
-    recording_options['record_constraints'] :  bool(False)
-        Tells recorder whether to record the constraints of the Driver.
-    recording_options['includes'] :  list of strings("*")
-        Patterns for variables to include in recording.
-    recording_options['excludes'] :  list of strings('')
-        Patterns for variables to exclude in recording (processed after includes).
+    A fake driver class used for doc generation testing.
 
     Attributes
     ----------
@@ -41,14 +24,14 @@ class Driver(object):
         Reports whether the driver ran successfully.
     iter_count : int
         Keep track of iterations for case recording.
-    metadata : list
-        List of metadata
+    options : list
+        List of options
     options : <OptionsDictionary>
         Dictionary with general pyoptsparse options.
     recording_options : <OptionsDictionary>
         Dictionary with driver recording options.
     cite : str
-        Listing of relevant citataions that should be referenced when
+        Listing of relevant citations that should be referenced when
         publishing work that uses this class.
     _problem : <Problem>
         Pointer to the containing problem.
@@ -120,7 +103,7 @@ class Driver(object):
         self.recording_options.declare('record_constraints', types=bool, default=True,
                                        desc='Set to True to record constraints at the \
                                        driver level')
-        self.recording_options.declare('includes', types=list, default=['*'],
+        self.recording_options.declare('includes', types=list, default=[],
                                        desc='Patterns for variables to include in recording')
         self.recording_options.declare('excludes', types=list, default=[],
                                        desc='Patterns for vars to exclude in recording '
@@ -143,7 +126,7 @@ class Driver(object):
         self.supports.declare('simultaneous_derivatives', types=bool, default=False)
 
         self.iter_count = 0
-        self.metadata = None
+        self.options = None
         self._model_viewer_data = None
         self.cite = ""
 
@@ -161,7 +144,7 @@ class Driver(object):
 
         Parameters
         ----------
-        recorder : BaseRecorder
+        recorder : CaseRecorder
            A recorder instance.
         """
         self._rec_mgr.append(recorder)
@@ -260,12 +243,16 @@ class Driver(object):
         rec_constraints = self.recording_options['record_constraints']
         rec_responses = self.recording_options['record_responses']
 
+        # includes and excludes for outputs are specified using promoted names
+        # NOTE: only local var names are in abs2prom, all will be gathered later
+        abs2prom = model._var_abs2prom['output']
+
         all_desvars = {n for n in self._designvars
-                       if check_path(n, incl, excl, True)}
+                       if n in abs2prom and check_path(abs2prom[n], incl, excl, True)}
         all_objectives = {n for n in self._objs
-                          if check_path(n, incl, excl, True)}
+                          if n in abs2prom and check_path(abs2prom[n], incl, excl, True)}
         all_constraints = {n for n in self._cons
-                           if check_path(n, incl, excl, True)}
+                           if n in abs2prom and check_path(abs2prom[n], incl, excl, True)}
         if rec_desvars:
             mydesvars = all_desvars
 
@@ -277,7 +264,7 @@ class Driver(object):
 
         if rec_responses:
             myresponses = {n for n in self._responses
-                           if check_path(n, incl, excl, True)}
+                           if n in abs2prom and check_path(abs2prom[n], incl, excl, True)}
 
         # get the includes that were requested for this Driver recording
         if incl:
@@ -288,7 +275,7 @@ class Driver(object):
             # First gather all of the desired outputs
             # The following might only be the local vars if MPI
             mysystem_outputs = {n for n in root._outputs
-                                if check_path(n, incl, excl)}
+                                if n in abs2prom and check_path(abs2prom[n], incl, excl)}
 
             # If MPI, and on rank 0, need to gather up all the variables
             #    even those not local to rank 0
@@ -327,16 +314,11 @@ class Driver(object):
         }
 
         self._rec_mgr.startup(self)
-        if self._rec_mgr._recorders:
-            from openmdao.devtools.problem_viewer.problem_viewer import _get_viewer_data
-            self._model_viewer_data = _get_viewer_data(problem)
-        if self.recording_options['record_metadata']:
-            self._rec_mgr.record_metadata(self)
 
         # set up simultaneous deriv coloring
         if self._simul_coloring_info and self.supports['simultaneous_derivatives']:
             if problem._mode == 'fwd':
-                self._setup_simul_coloring(problem._mode)
+                self._setup_simul_coloring()
             else:
                 raise RuntimeError("simultaneous derivs are currently not supported in rev mode.")
 
@@ -553,10 +535,10 @@ class Driver(object):
             Failure flag; True if failed to converge, False is successful.
         """
         with Recording(self._get_name(), self.iter_count, self) as rec:
-            failure_flag = self._problem.model._solve_nonlinear()
+            self._problem.model.run_solve_nonlinear()
 
         self.iter_count += 1
-        return failure_flag
+        return False
 
     def _dict2array_jac(self, derivs):
         osize = 0
@@ -769,38 +751,3 @@ class Driver(object):
         else:
             raise RuntimeError("Driver '%s' does not support simultaneous derivatives." %
                                self._get_name())
-
-    def _setup_simul_coloring(self, mode='fwd'):
-        """
-        Set up metadata for simultaneous derivative solution.
-
-        Parameters
-        ----------
-        mode : str
-            Derivative direction, either 'fwd' or 'rev'.
-        """
-        if mode == 'rev':
-            raise NotImplementedError("Simultaneous derivatives are currently not supported "
-                                      "in 'rev' mode")
-
-        prom2abs = self._problem.model._var_allprocs_prom2abs_list['output']
-
-        coloring, maps = self._simul_coloring_info
-        for dv, colors in iteritems(coloring):
-            if dv not in self._designvars:
-                # convert name from promoted to absolute
-                dv = prom2abs[dv][0]
-            self._designvars[dv]['simul_deriv_color'] = colors
-
-        for res, dvdict in iteritems(maps):
-            if res not in self._responses:
-                # convert name from promoted to absolute
-                res = prom2abs[res][0]
-            self._responses[res]['simul_map'] = dvdict
-
-            for dv, col_dict in dvdict.items():
-                if dv not in self._designvars:
-                    # convert name from promoted to absolute and replace dictionary key
-                    del dvdict[dv]
-                    dv = prom2abs[dv][0]
-                    dvdict[dv] = col_dict

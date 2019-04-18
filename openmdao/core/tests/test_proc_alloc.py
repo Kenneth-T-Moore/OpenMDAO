@@ -3,16 +3,15 @@ from __future__ import print_function
 import unittest
 
 from openmdao.api import Problem, Group, ExecComp
-from openmdao.api import Group, ParallelGroup, Problem, IndepVarComp, LinearBlockGS, DefaultVector, \
+from openmdao.api import Group, ParallelGroup, Problem, IndepVarComp, LinearBlockGS, \
     ExecComp, ExplicitComponent, PETScVector, ScipyKrylov, NonlinearBlockGS
 from openmdao.utils.mpi import MPI
 from openmdao.utils.assert_utils import assert_rel_error
 
-if MPI:
+try:
     from openmdao.api import PETScVector
-    vector_class = PETScVector
-else:
-    vector_class = DefaultVector
+except:
+    PETScVector = None
 
 
 def _build_model(nsubs, min_procs=None, max_procs=None, weights=None, top=None, mode='fwd'):
@@ -26,13 +25,11 @@ def _build_model(nsubs, min_procs=None, max_procs=None, weights=None, top=None, 
 
     model = p.model
 
-    #import wingdbstub
-
     model.add_subsystem('indep', IndepVarComp('x', 1.0))
     par = model.add_subsystem('par', ParallelGroup())
     for i in range(nsubs):
         par.add_subsystem("C%d" % i, ExecComp("y=2.0*x"),
-                            min_procs=min_procs[i], max_procs=max_procs[i], proc_weight=weights[i])
+                          min_procs=min_procs[i], max_procs=max_procs[i], proc_weight=weights[i])
         model.connect('indep.x', 'par.C%d.x' % i)
 
     s_sum = '+'.join(['x%d' % i for i in range(nsubs)])
@@ -44,10 +41,11 @@ def _build_model(nsubs, min_procs=None, max_procs=None, weights=None, top=None, 
     model.add_design_var('indep.x')
     model.add_objective('objective.y')
 
-    p.setup(vector_class=vector_class, mode=mode, check=False)
+    p.setup(mode=mode, check=False)
     p.final_setup()
 
     return p
+
 
 def _get_which_procs(group):
     sub_inds = [i for i, s in enumerate(group._subsystems_allprocs)
@@ -160,7 +158,7 @@ class ProcTestCase3(unittest.TestCase):
         model.add_design_var('indep.x')
         model.add_objective('objective.y')
 
-        p.setup(vector_class=vector_class, check=False)
+        p.setup(check=False)
         p.final_setup()
 
         all_inds = _get_which_procs(p.model)
@@ -212,6 +210,7 @@ class ProcTestCase6(unittest.TestCase):
 class ProcTestCase8(unittest.TestCase):
 
     N_PROCS = 8
+
     def test_4_subs_weighted(self):
         p = _build_model(nsubs=4, weights=[1.0, 2.0, 1.0, 4.0], mode='rev')
         all_inds = _get_which_procs(p.model.par)

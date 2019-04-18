@@ -2,15 +2,16 @@
 
 import unittest
 import sys
-import warnings
 
-from six import StringIO
+from distutils.version import LooseVersion
 
 import numpy as np
+from scipy import __version__ as scipy_version
 
 from openmdao.api import Problem, Group, IndepVarComp, ExecComp, ScipyOptimizeDriver, \
-     ScipyOptimizer, ExplicitComponent, DirectSolver, NonlinearBlockGS
-from openmdao.utils.assert_utils import assert_rel_error
+    ScipyOptimizer, ExplicitComponent, DirectSolver, NonlinearBlockGS
+from openmdao.utils.assert_utils import assert_rel_error, assert_warning
+from openmdao.utils.general_utils import run_driver
 from openmdao.test_suite.components.expl_comp_array import TestExplCompArrayDense
 from openmdao.test_suite.components.paraboloid import Paraboloid
 from openmdao.test_suite.components.sellar import SellarDerivativesGrouped, SellarDerivatives
@@ -23,15 +24,10 @@ class TestScipyOptimizeDriver(unittest.TestCase):
     def test_scipyoptimizer_deprecation(self):
 
         msg = "'ScipyOptimizer' provides backwards compatibility " \
-            + "with OpenMDAO <= 2.2 ; use 'ScipyOptimizeDriver' instead."
+              "with OpenMDAO <= 2.2 ; use 'ScipyOptimizeDriver' instead."
 
-        # check deprecation on getter
-        with warnings.catch_warnings(record=True) as w:
-            driver = ScipyOptimizer()
-
-        self.assertEqual(len(w), 1)
-        self.assertTrue(issubclass(w[0].category, DeprecationWarning))
-        self.assertEqual(str(w[0].message), msg)
+        with assert_warning(DeprecationWarning, msg):
+            ScipyOptimizer()
 
     def test_compute_totals_basic_return_array(self):
         # Make sure 'array' return_format works.
@@ -62,9 +58,7 @@ class TestScipyOptimizeDriver(unittest.TestCase):
 
         prob.setup(check=False, mode='rev')
 
-        failed, rel_err, abs_err = prob.run_model()
-
-        self.assertFalse(failed, "Optimization failed.")
+        prob.run_model()
 
         of = ['f_xy']
         wrt = ['x', 'y']
@@ -87,7 +81,7 @@ class TestScipyOptimizeDriver(unittest.TestCase):
         model.add_constraint('comp.y1')
         model.add_constraint('comp.y2')
 
-        prob.setup(check=False)
+        prob.setup(check=False, mode='auto')
 
         failed = prob.run_driver()
 
@@ -142,10 +136,7 @@ class TestScipyOptimizeDriver(unittest.TestCase):
 
         prob.set_solver_print(level=0)
 
-        prob.driver = ScipyOptimizer()
-        prob.driver.options['optimizer'] = 'SLSQP'
-        prob.driver.options['tol'] = 1e-9
-        prob.driver.options['disp'] = False
+        prob.driver = ScipyOptimizer(optimizer='SLSQP', tol=1e-9, disp=False)
 
         model.add_design_var('x', lower=-50.0, upper=50.0)
         model.add_design_var('y', lower=-50.0, upper=50.0)
@@ -877,6 +868,221 @@ class TestScipyOptimizeDriver(unittest.TestCase):
         assert_rel_error(self, prob['z'][1], 0.0, 1e-3)
         assert_rel_error(self, prob['x'], 0.0, 1e-3)
 
+    @unittest.skipUnless(LooseVersion(scipy_version) >= LooseVersion("1.1"),
+                         "scipy >= 1.1 is required.")
+    def test_trust_constr(self):
+
+        def rosenbrock(x):
+            x_0 = x[:-1]
+            x_1 = x[1:]
+            return sum((1 - x_0) ** 2) + 100 * sum((x_1 - x_0 ** 2) ** 2)
+
+        class Rosenbrock(ExplicitComponent):
+
+            def setup(self):
+                self.add_input('x', np.array([1.5, 1.5, 1.5]))
+                self.add_output('f', 0.0)
+                self.declare_partials('f', 'x', method='fd', form='central', step=1e-2)
+
+            def compute(self, inputs, outputs, discrete_inputs=None, discrete_outputs=None):
+                x = inputs['x']
+                outputs['f'] = rosenbrock(x)
+
+        x0 = np.array([1.2, 0.8, 1.3])
+
+        prob = Problem()
+        model = prob.model
+        indeps = prob.model.add_subsystem('indeps', IndepVarComp(), promotes=['*'])
+        indeps.add_output('x', list(x0))
+
+        prob.model.add_subsystem('rosen', Rosenbrock(), promotes=['*'])
+        prob.model.add_subsystem('con', ExecComp('c=sum(x)', x=np.ones(3)), promotes=['*'])
+        prob.driver = driver = ScipyOptimizeDriver()
+        driver.options['optimizer'] = 'trust-constr'
+        driver.options['tol'] = 1e-8
+        driver.options['maxiter'] = 2000
+        driver.options['disp'] = False
+
+        model.add_design_var('x')
+        model.add_objective('f', scaler=1/rosenbrock(x0))
+        model.add_constraint('c', lower=0, upper=10)  # Double sided
+
+        prob.setup()
+        prob.run_driver()
+
+        assert_rel_error(self, prob['x'], np.ones(3), 2e-2)
+        assert_rel_error(self, prob['f'], 0., 1e-2)
+        self.assertTrue(prob['c'] < 10)
+        self.assertTrue(prob['c'] > 0)
+
+    @unittest.skipUnless(LooseVersion(scipy_version) >= LooseVersion("1.1"),
+                         "scipy >= 1.1 is required.")
+    def test_trust_constr_hess_option(self):
+
+        def rosenbrock(x):
+            x_0 = x[:-1]
+            x_1 = x[1:]
+            return sum((1 - x_0) ** 2) + 100 * sum((x_1 - x_0 ** 2) ** 2)
+
+        class Rosenbrock(ExplicitComponent):
+
+            def setup(self):
+                self.add_input('x', np.array([1.5, 1.5, 1.5]))
+                self.add_output('f', 0.0)
+                self.declare_partials('f', 'x', method='fd', form='central', step=1e-3)
+
+            def compute(self, inputs, outputs, discrete_inputs=None, discrete_outputs=None):
+                x = inputs['x']
+                outputs['f'] = rosenbrock(x)
+
+        x0 = np.array([1.2, 0.8, 1.3])
+
+        prob = Problem()
+        model = prob.model
+        indeps = prob.model.add_subsystem('indeps', IndepVarComp(), promotes=['*'])
+        indeps.add_output('x', list(x0))
+
+        prob.model.add_subsystem('rosen', Rosenbrock(), promotes=['*'])
+        prob.model.add_subsystem('con', ExecComp('c=sum(x)', x=np.ones(3)), promotes=['*'])
+        prob.driver = driver = ScipyOptimizeDriver()
+        driver.options['optimizer'] = 'trust-constr'
+        driver.options['tol'] = 1e-8
+        driver.options['maxiter'] = 2000
+        driver.options['disp'] = False
+        driver.opt_settings['hess'] = '2-point'
+
+        model.add_design_var('x')
+        model.add_objective('f', scaler=1/rosenbrock(x0))
+        model.add_constraint('c', lower=0, upper=10)  # Double sided
+
+        prob.setup()
+        prob.run_driver()
+
+        assert_rel_error(self, prob['x'], np.ones(3), 2e-2)
+        assert_rel_error(self, prob['f'], 0., 1e-2)
+        self.assertTrue(prob['c'] < 10)
+        self.assertTrue(prob['c'] > 0)
+
+    @unittest.skipUnless(LooseVersion(scipy_version) >= LooseVersion("1.1"),
+                         "scipy >= 1.1 is required.")
+    def test_trust_constr_equality_con(self):
+
+        def rosenbrock(x):
+            x_0 = x[:-1]
+            x_1 = x[1:]
+            return sum((1 - x_0) ** 2) + 100 * sum((x_1 - x_0 ** 2) ** 2)
+
+        class Rosenbrock(ExplicitComponent):
+
+            def setup(self):
+                self.add_input('x', np.array([1.5, 1.5, 1.5]))
+                self.add_output('f', 0.0)
+                self.declare_partials('f', 'x', method='fd', form='central', step=1e-4)
+
+            def compute(self, inputs, outputs, discrete_inputs=None, discrete_outputs=None):
+                x = inputs['x']
+                outputs['f'] = rosenbrock(x)
+
+        x0 = np.array([0.5, 0.8, 1.4])
+
+        prob = Problem()
+        model = prob.model
+        indeps = prob.model.add_subsystem('indeps', IndepVarComp())
+        indeps.add_output('x', list(x0))
+
+        model.add_subsystem('rosen', Rosenbrock())
+        model.add_subsystem('con', ExecComp('c=sum(x)', x=np.ones(3)))
+        model.connect('indeps.x', 'rosen.x')
+        model.connect('indeps.x', 'con.x')
+        prob.driver = driver = ScipyOptimizeDriver()
+        driver.options['optimizer'] = 'trust-constr'
+        driver.options['tol'] = 1e-5
+        driver.options['maxiter'] = 2000
+        driver.options['disp'] = False
+
+        model.add_design_var('indeps.x')
+        model.add_objective('rosen.f', scaler=1/rosenbrock(x0))
+        model.add_constraint('con.c', equals=1.)
+
+        prob.setup()
+        prob.run_driver()
+
+        assert_rel_error(self, prob['con.c'], 1., 1e-3)
+
+    @unittest.skipUnless(LooseVersion(scipy_version) >= LooseVersion("1.2"),
+                         "scipy >= 1.2 is required.")
+    def test_trust_constr_inequality_con(self):
+
+        class Sphere(ExplicitComponent):
+
+            def setup(self):
+                self.add_input('x', np.array([1.5, 1.5]))
+                self.add_output('f', 0.0)
+                self.declare_partials('f', 'x', method='fd', form='central', step=1e-4)
+
+            def compute(self, inputs, outputs, discrete_inputs=None, discrete_outputs=None):
+                x = inputs['x']
+                outputs['f'] = sum(x**2)
+
+        x0 = np.array([1.2, 1.5])
+
+        prob = Problem()
+        indeps = prob.model.add_subsystem('indeps', IndepVarComp(), promotes=['*'])
+        indeps.add_output('x', list(x0))
+
+        prob.model.add_subsystem('sphere', Sphere(), promotes=['*'])
+        prob.model.add_subsystem('con', ExecComp('c=sum(x)', x=np.ones(2)), promotes=['*'])
+        prob.driver = ScipyOptimizeDriver()
+        prob.driver.options['optimizer'] = 'trust-constr'
+        prob.driver.options['tol'] = 1e-5
+        prob.driver.options['maxiter'] = 2000
+        prob.driver.options['disp'] = False
+
+        prob.model.add_design_var('x')
+        prob.model.add_objective('f')
+        prob.model.add_constraint('c', lower=1.0)
+
+        prob.setup()
+        prob.run_driver()
+
+        assert_rel_error(self, prob['c'], 1.0, 1e-2)
+
+    @unittest.skipUnless(LooseVersion(scipy_version) >= LooseVersion("1.2"),
+                         "scipy >= 1.2 is required.")
+    def test_trust_constr_bounds(self):
+        class Rosenbrock(ExplicitComponent):
+
+            def setup(self):
+                self.add_input('x', np.array([-1.5, -1.5]))
+                self.add_output('f', 1000.0)
+                self.declare_partials('f', 'x', method='fd', form='central', step=1e-3)
+
+            def compute(self, inputs, outputs, discrete_inputs=None, discrete_outputs=None):
+                x = inputs['x']
+                outputs['f'] = sum(x ** 2)
+
+        x0 = np.array([-1.5, -1.5])
+
+        prob = Problem()
+        indeps = prob.model.add_subsystem('indeps', IndepVarComp(), promotes=['*'])
+        indeps.add_output('x', list(x0))
+
+        prob.model.add_subsystem('sphere', Rosenbrock(), promotes=['*'])
+        prob.driver = ScipyOptimizeDriver()
+        prob.driver.options['optimizer'] = 'trust-constr'
+        prob.driver.options['tol'] = 1e-7
+        prob.driver.options['maxiter'] = 2000
+        prob.driver.options['disp'] = False
+
+        prob.model.add_design_var('x', lower=np.array([-2., -2.]), upper=np.array([-1., -1.2]))
+        prob.model.add_objective('f', scaler=1)
+
+        prob.setup()
+        prob.run_driver()
+
+        assert_rel_error(self, prob['x'][0], -1., 1e-2)
+        assert_rel_error(self, prob['x'][1], -1.2, 1e-2)
+
     def test_simple_paraboloid_lower_linear(self):
 
         prob = Problem()
@@ -969,19 +1175,45 @@ class TestScipyOptimizeDriver(unittest.TestCase):
         model.add_objective('f_xy')
         model.add_constraint('c', upper=-15.0)
 
-        prob.setup(check=False)
+        prob.setup(check=False, mode='rev')
 
-        stdout = sys.stdout
-        strout = StringIO()
-        sys.stdout = strout
-        try:
-            prob.run_driver()
-        finally:
-            sys.stdout = stdout
+        failed, output = run_driver(prob)
 
-        output = strout.getvalue()
+        self.assertFalse(failed, "Optimization failed.")
+
         self.assertTrue('Solving variable: comp.f_xy' in output)
         self.assertTrue('Solving variable: con.c' in output)
+
+        prob = Problem()
+        model = prob.model = Group()
+
+        model.add_subsystem('p1', IndepVarComp('x', 50.0), promotes=['*'])
+        model.add_subsystem('p2', IndepVarComp('y', 50.0), promotes=['*'])
+        model.add_subsystem('comp', Paraboloid(), promotes=['*'])
+        model.add_subsystem('con', ExecComp('c = - x + y'), promotes=['*'])
+
+        prob.set_solver_print(level=0)
+
+        prob.driver = ScipyOptimizeDriver()
+        prob.driver.options['optimizer'] = 'SLSQP'
+        prob.driver.options['tol'] = 1e-9
+        prob.driver.options['disp'] = False
+
+        prob.driver.options['debug_print'] = ['totals']
+
+        model.add_design_var('x', lower=-50.0, upper=50.0)
+        model.add_design_var('y', lower=-50.0, upper=50.0)
+        model.add_objective('f_xy')
+        model.add_constraint('c', upper=-15.0)
+
+        prob.setup(check=False, mode='fwd')
+
+        failed, output = run_driver(prob)
+
+        self.assertFalse(failed, "Optimization failed.")
+
+        self.assertTrue('Solving variable: p1.x' in output)
+        self.assertTrue('Solving variable: p2.y' in output)
 
     def test_debug_print_option(self):
 
@@ -1009,15 +1241,12 @@ class TestScipyOptimizeDriver(unittest.TestCase):
 
         prob.setup(check=False)
 
-        stdout = sys.stdout
-        strout = StringIO()
-        sys.stdout = strout
-        try:
-            prob.run_driver()
-        finally:
-            sys.stdout = stdout
+        failed, output = run_driver(prob)
 
-        output = strout.getvalue().split('\n')
+        self.assertFalse(failed, "Optimization failed.")
+
+        output = output.split('\n')
+
         self.assertTrue(output.count("Design Vars") > 1,
                         "Should be more than one design vars header printed")
         self.assertTrue(output.count("Nonlinear constraints") > 1,
@@ -1067,6 +1296,39 @@ class TestScipyOptimizeDriver(unittest.TestCase):
         prob.driver.run()
         self.assertEqual(len(prob.driver._lincongrad_cache), 1)
 
+    def test_call_final_setup(self):
+        # Make sure we call final setup if our model hasn't been setup.
+
+        prob = Problem()
+        model = prob.model = Group()
+
+        model.add_subsystem('p1', IndepVarComp('x', 50.0), promotes=['*'])
+        model.add_subsystem('p2', IndepVarComp('y', 50.0), promotes=['*'])
+        model.add_subsystem('comp', Paraboloid(), promotes=['*'])
+        model.add_subsystem('con', ExecComp('c = - x + y'), promotes=['*'])
+
+        prob.set_solver_print(level=0)
+
+        prob.driver = ScipyOptimizeDriver()
+        prob.driver.options['optimizer'] = 'SLSQP'
+        prob.driver.options['tol'] = 1e-9
+        prob.driver.options['disp'] = False
+
+        model.add_design_var('x', lower=-50.0, upper=50.0)
+        model.add_design_var('y', lower=-50.0, upper=50.0)
+        model.add_objective('f_xy')
+        model.add_constraint('c', equals=-15.0)
+
+        prob.setup(check=False)
+
+        with self.assertRaises(RuntimeError) as cm:
+            totals = prob.check_totals(method='fd', out_stream=False)
+
+        expected_msg = "run_model must be called before total derivatives can be checked."
+
+        self.assertEqual(expected_msg, str(cm.exception))
+
+
 class TestScipyOptimizeDriverFeatures(unittest.TestCase):
 
     def test_feature_basic(self):
@@ -1107,9 +1369,7 @@ class TestScipyOptimizeDriverFeatures(unittest.TestCase):
         model.add_subsystem('p2', IndepVarComp('y', 50.0), promotes=['*'])
         model.add_subsystem('comp', Paraboloid(), promotes=['*'])
 
-        prob.driver = ScipyOptimizeDriver()
-        prob.driver.options['optimizer'] = 'COBYLA'
-        prob.driver.options['disp'] = True
+        prob.driver = ScipyOptimizeDriver(optimizer='COBYLA')
 
         model.add_design_var('x', lower=-50.0, upper=50.0)
         model.add_design_var('y', lower=-50.0, upper=50.0)
@@ -1233,6 +1493,336 @@ class TestScipyOptimizeDriverFeatures(unittest.TestCase):
         prob.setup(check=False)
 
         prob.run_driver()
+
+    def test_multiple_objectives_error(self):
+
+        from openmdao.api import Problem, IndepVarComp, ScipyOptimizeDriver, ExecComp
+        from openmdao.test_suite.components.paraboloid import Paraboloid
+
+        prob = Problem()
+        model = prob.model
+
+        model.add_subsystem('p1', IndepVarComp('x', 50.0), promotes=['*'])
+        model.add_subsystem('p2', IndepVarComp('y', 50.0), promotes=['*'])
+        model.add_subsystem('comp', Paraboloid(), promotes=['*'])
+        model.add_subsystem('con', ExecComp('c = - x + y'), promotes=['*'])
+
+        prob.set_solver_print(level=0)
+
+        prob.driver = ScipyOptimizeDriver()
+        prob.driver.options['optimizer'] = 'SLSQP'
+        prob.driver.options['tol'] = 1e-9
+        prob.driver.options['disp'] = False
+
+        self.assertFalse(prob.driver.supports['multiple_objectives'])
+        prob.driver.options['debug_print'] = ['nl_cons', 'objs']
+
+        model.add_design_var('x', lower=-50.0, upper=50.0)
+        model.add_design_var('y', lower=-50.0, upper=50.0)
+        model.add_objective('f_xy')
+        model.add_objective('c')  # Second objective
+        prob.setup(check=False)
+
+        with self.assertRaises(RuntimeError):
+            prob.run_model()
+
+        with self.assertRaises(RuntimeError):
+            prob.run_driver()
+
+    def test_basinhopping(self):
+
+        from openmdao.api import Problem, IndepVarComp, ScipyOptimizeDriver
+
+        class Func2d(ExplicitComponent):
+
+            def setup(self):
+                self.add_input('x', np.ones(2))
+                self.add_output('f', 0.0)
+                self.declare_partials('f', 'x')
+
+            def compute(self, inputs, outputs, discrete_inputs=None, discrete_outputs=None):
+                x = inputs['x']
+                outputs['f'] = np.cos(14.5 * x[0] - 0.3) + (x[1] + 0.2) * x[1] + (x[0] + 0.2) * x[0]
+
+            def compute_partials(self, inputs, partials):
+                x = inputs['x']
+                df = np.zeros(2)
+                df[0] = -14.5 * np.sin(14.5 * x[0] - 0.3) + 2. * x[0] + 0.2
+                df[1] = 2. * x[1] + 0.2
+                partials['f', 'x'] = df
+
+        prob = Problem()
+        model = prob.model
+
+        model.add_subsystem('indeps', IndepVarComp('x', np.ones(2)), promotes=['*'])
+        model.add_subsystem('func2d', Func2d(), promotes=['*'])
+
+        prob.driver = driver = ScipyOptimizeDriver()
+        driver.options['optimizer'] = 'basinhopping'
+        driver.options['disp'] = False
+        driver.opt_settings['niter'] = 1000
+        driver.opt_settings['seed'] = 1234
+
+        model.add_design_var('x', lower=[-1, -1], upper=[0, 0])
+        model.add_objective('f')
+        prob.setup()
+        prob.run_driver()
+        assert_rel_error(self, prob['x'], np.array([-0.1951, -0.1000]), 1e-3)
+        assert_rel_error(self, prob['f'], -1.0109, 1e-3)
+
+    def test_basinhopping_bounded(self):
+        # It should find the local minimum, which is inside the bounds
+
+        from openmdao.api import Problem, IndepVarComp, ScipyOptimizeDriver
+
+        class Func2d(ExplicitComponent):
+
+            def setup(self):
+                self.add_input('x', np.ones(2))
+                self.add_output('f', 0.0)
+                self.declare_partials('f', 'x')
+
+            def compute(self, inputs, outputs, discrete_inputs=None, discrete_outputs=None):
+                x = inputs['x']
+                outputs['f'] = np.cos(14.5 * x[0] - 0.3) + (x[1] + 0.2) * x[1] + (x[0] + 0.2) * x[0]
+
+            def compute_partials(self, inputs, partials):
+                x = inputs['x']
+                df = np.zeros(2)
+                df[0] = -14.5 * np.sin(14.5 * x[0] - 0.3) + 2. * x[0] + 0.2
+                df[1] = 2. * x[1] + 0.2
+                partials['f', 'x'] = df
+
+        prob = Problem()
+        model = prob.model
+
+        model.add_subsystem('indeps', IndepVarComp('x', np.ones(2)), promotes=['*'])
+        model.add_subsystem('func2d', Func2d(), promotes=['*'])
+
+        prob.driver = driver = ScipyOptimizeDriver()
+        driver.options['optimizer'] = 'basinhopping'
+        driver.options['disp'] = False
+        driver.opt_settings['niter'] = 200
+        driver.opt_settings['seed'] = 1234
+
+        model.add_design_var('x', lower=[0, -1], upper=[1, 1])
+        model.add_objective('f')
+        prob.setup()
+        prob.run_driver()
+        assert_rel_error(self, prob['x'], np.array([0.234171, -0.1000]), 1e-3)
+        assert_rel_error(self, prob['f'], -0.907267, 1e-3)
+
+    @unittest.skipUnless(LooseVersion(scipy_version) >= LooseVersion("1.2"),
+                         "scipy >= 1.2 is required.")
+    def test_dual_annealing(self):
+
+        from openmdao.api import Problem, IndepVarComp, ScipyOptimizeDriver
+
+        size = 6  # size of the design variable
+
+        def rosenbrock(x):
+            x_0 = x[:-1]
+            x_1 = x[1:]
+            return sum((1 - x_0) ** 2) + 100 * sum((x_1 - x_0 ** 2) ** 2)
+
+        class Rosenbrock(ExplicitComponent):
+
+            def setup(self):
+                self.add_input('x', 1.5*np.ones(size))
+                self.add_output('f', 0.0)
+
+            def compute(self, inputs, outputs, discrete_inputs=None, discrete_outputs=None):
+                x = inputs['x']
+                outputs['f'] = rosenbrock(x)
+
+        prob = Problem()
+        model = prob.model
+
+        model.add_subsystem('indeps', IndepVarComp('x', np.ones(size)), promotes=['*'])
+        model.add_subsystem('rosen', Rosenbrock(), promotes=['*'])
+
+        prob.driver = driver = ScipyOptimizeDriver()
+        driver.options['optimizer'] = 'dual_annealing'
+        driver.options['disp'] = False
+        driver.options['tol'] = 1e-9
+        driver.options['maxiter'] = 2000
+        driver.opt_settings['seed'] = 1234
+        driver.opt_settings['initial_temp'] = 5230
+
+        model.add_design_var('x', lower=-2*np.ones(size), upper=2*np.ones(size))
+        model.add_objective('f')
+        prob.setup()
+        prob.run_driver()
+        assert_rel_error(self, prob['x'], np.ones(size), 1e-2)
+        assert_rel_error(self, prob['f'], 0.0, 1e-2)
+
+    @unittest.skipUnless(LooseVersion(scipy_version) >= LooseVersion("1.2"),
+                         "scipy >= 1.2 is required.")
+    def test_dual_annealing_rastrigin(self):
+        from openmdao.api import Problem, IndepVarComp, ScipyOptimizeDriver
+        # Example from the Scipy documentation
+
+        size = 3  # size of the design variable
+
+        def rastrigin(x):
+            a = 10  # constant
+            return np.sum(np.square(x) - a * np.cos(2 * np.pi * x)) + a * np.size(x)
+
+        class Rastrigin(ExplicitComponent):
+
+            def setup(self):
+                self.add_input('x', 0.5 * np.ones(size))
+                self.add_output('f', 0.5)
+
+            def compute(self, inputs, outputs, discrete_inputs=None, discrete_outputs=None):
+                x = inputs['x']
+                outputs['f'] = rastrigin(x)
+
+        prob = Problem()
+        model = prob.model
+
+        model.add_subsystem('indeps', IndepVarComp('x', np.ones(size)), promotes=['*'])
+        model.add_subsystem('rastrigin', Rastrigin(), promotes=['*'])
+
+        prob.driver = driver = ScipyOptimizeDriver()
+        driver.options['optimizer'] = 'dual_annealing'
+        driver.options['disp'] = False
+        driver.options['tol'] = 1e-9
+        driver.options['maxiter'] = 3000
+        driver.opt_settings['seed'] = 1234
+        driver.opt_settings['initial_temp'] = 5230
+
+        model.add_design_var('x', lower=-2 * np.ones(size), upper=2 * np.ones(size))
+        model.add_objective('f')
+        prob.setup()
+        prob.run_driver()
+        assert_rel_error(self, prob['x'], np.zeros(size), 1e-2)
+        assert_rel_error(self, prob['f'], 0.0, 1e-2)
+
+    def test_differential_evolution(self):
+        # Source of example:
+        # https://scipy.github.io/devdocs/generated/scipy.optimize.dual_annealing.html
+
+        from openmdao.api import Problem, IndepVarComp, ScipyOptimizeDriver
+
+        size = 3  # size of the design variable
+
+        def rastrigin(x):
+            a = 10  # constant
+            return np.sum(np.square(x) - a * np.cos(2 * np.pi * x)) + a * np.size(x)
+
+        class Rastrigin(ExplicitComponent):
+
+            def setup(self):
+                self.add_input('x', 0.5 * np.ones(size))
+                self.add_output('f', 0.5)
+
+            def compute(self, inputs, outputs, discrete_inputs=None, discrete_outputs=None):
+                x = inputs['x']
+                outputs['f'] = rastrigin(x)
+
+        prob = Problem()
+        model = prob.model
+
+        model.add_subsystem('indeps', IndepVarComp('x', np.ones(size)), promotes=['*'])
+        model.add_subsystem('rastrigin', Rastrigin(), promotes=['*'])
+
+        prob.driver = driver = ScipyOptimizeDriver()
+        driver.options['optimizer'] = 'differential_evolution'
+        driver.options['disp'] = False
+        driver.options['tol'] = 1e-9
+
+        model.add_design_var('x', lower=-5.12 * np.ones(size), upper=5.12 * np.ones(size))
+        model.add_objective('f')
+        prob.setup()
+        prob.run_driver()
+        assert_rel_error(self, prob['x'], np.zeros(size), 1e-6)
+        assert_rel_error(self, prob['f'], 0.0, 1e-6)
+
+    def test_differential_evolution_bounded(self):
+        # Source of example:
+        # https://scipy.github.io/devdocs/generated/scipy.optimize.dual_annealing.html
+        # In this example the minimum is not the unbounded global minimum.
+
+        from openmdao.api import Problem, IndepVarComp, ScipyOptimizeDriver
+
+        size = 3  # size of the design variable
+
+        def rastrigin(x):
+            a = 10  # constant
+            return np.sum(np.square(x) - a * np.cos(2 * np.pi * x)) + a * np.size(x)
+
+        class Rastrigin(ExplicitComponent):
+
+            def setup(self):
+                self.add_input('x', 0.5 * np.ones(size))
+                self.add_output('f', 0.5)
+
+            def compute(self, inputs, outputs, discrete_inputs=None, discrete_outputs=None):
+                x = inputs['x']
+                outputs['f'] = rastrigin(x)
+
+        prob = Problem()
+        model = prob.model
+
+        model.add_subsystem('indeps', IndepVarComp('x', np.ones(size)), promotes=['*'])
+        model.add_subsystem('rastrigin', Rastrigin(), promotes=['*'])
+
+        prob.driver = driver = ScipyOptimizeDriver()
+        driver.options['optimizer'] = 'differential_evolution'
+        driver.options['disp'] = False
+        driver.options['tol'] = 1e-9
+
+        model.add_design_var('x', lower=-2.0 * np.ones(size), upper=-0.5 * np.ones(size))
+        model.add_objective('f')
+        prob.setup()
+        prob.run_driver()
+        assert_rel_error(self, prob['x'], -np.ones(size), 1e-2)
+        assert_rel_error(self, prob['f'], 3.0, 1e-2)
+
+    @unittest.skipUnless(LooseVersion(scipy_version) >= LooseVersion("1.2"),
+                         "scipy >= 1.2 is required.")
+    def test_shgo(self):
+        # Source of example:
+        # https://scipy.github.io/devdocs/generated/scipy.optimize.dual_annealing.html
+
+        from openmdao.api import Problem, IndepVarComp, ScipyOptimizeDriver
+
+        size = 3  # size of the design variable
+
+        def rastrigin(x):
+            a = 10  # constant
+            return np.sum(np.square(x) - a*np.cos(2*np.pi*x)) + a*np.size(x)
+
+        class Rastrigin(ExplicitComponent):
+
+            def setup(self):
+                self.add_input('x', np.ones(size))
+                self.add_output('f', 0.0)
+
+            def compute(self, inputs, outputs, discrete_inputs=None, discrete_outputs=None):
+                x = inputs['x']
+                outputs['f'] = rastrigin(x)
+
+        prob = Problem()
+        model = prob.model
+
+        model.add_subsystem('indeps', IndepVarComp('x', np.ones(size)), promotes=['*'])
+        model.add_subsystem('rastrigin', Rastrigin(), promotes=['*'])
+
+        prob.driver = driver = ScipyOptimizeDriver()
+        driver.options['optimizer'] = 'shgo'
+        driver.options['disp'] = False
+        driver.options['maxiter'] = 100
+        driver.opt_settings['maxtime'] = 10  # seconds
+        driver.opt_settings['iters'] = 3
+
+        model.add_design_var('x', lower=-5.12*np.ones(size), upper=5.12*np.ones(size))
+        model.add_objective('f')
+        prob.setup()
+        prob.run_driver()
+        assert_rel_error(self, prob['x'], np.zeros(size), 1e-6)
+        assert_rel_error(self, prob['f'], 0.0, 1e-6)
 
 
 if __name__ == "__main__":

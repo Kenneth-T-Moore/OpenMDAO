@@ -4,9 +4,11 @@ Utils for dealing with arrays.
 from __future__ import print_function, division
 
 import sys
-import numpy as np
 import six
 from six.moves import range
+from itertools import product
+
+import numpy as np
 
 
 def evenly_distrib_idxs(num_divisions, arr_size):
@@ -67,9 +69,15 @@ def take_nth(rank, size, seq):
     while True:
         for proc in range(size):
             if rank == proc:
-                yield six.next(it)
+                try:
+                    yield six.next(it)
+                except StopIteration:
+                    return
             else:
-                six.next(it)
+                try:
+                    six.next(it)
+                except StopIteration:
+                    return
 
 
 def convert_neg(arr, dim):
@@ -115,6 +123,12 @@ def array_viz(arr, prob=None, of=None, wrt=None, stream=sys.stdout):
     """
     if len(arr.shape) != 2:
         raise RuntimeError("array_viz only works for 2d arrays.")
+
+    if prob is not None:
+        if of is None:
+            of = prob.driver._get_ordered_nl_responses()
+        if wrt is None:
+            wrt = list(prob.driver._designvars)
 
     if prob is None or of is None or wrt is None:
         for r in range(arr.shape[0]):
@@ -190,3 +204,101 @@ def array_connection_compatible(shape1, shape2):
         fundamental_shape2 = np.ones((1,))
 
     return np.all(fundamental_shape1 == fundamental_shape2)
+
+
+def tile_sparse_jac(data, rows, cols, nrow, ncol, num_nodes):
+    """
+    Assemble a sprase csr jacobian for a vectorized component.
+
+    Parameters
+    ----------
+    data : ndarray
+        Array of values
+    rows : index array
+        Array of row indices.
+    cols : index array
+        Array of column indices.
+    nrow : int
+        Number of rows in sub jacobian.
+    ncol : int
+        Number of columns in sub jacobian.
+    num_nodes : int
+        Number of vectorized copies to tile.
+
+    Returns
+    -------
+    ndarray, ndarray, ndarray
+        CSR Sparse jacobian of size num_nodes*nrow by num_nodes*ncol
+    """
+    nnz = len(rows)
+
+    if np.isscalar(data):
+        data = data * np.ones(nnz)
+
+    if not np.isscalar(nrow):
+        nrow = np.prod(nrow)
+
+    if not np.isscalar(ncol):
+        ncol = np.prod(ncol)
+
+    data = np.tile(data, num_nodes)
+    rows = np.tile(rows, num_nodes) + np.repeat(np.arange(num_nodes), nnz) * nrow
+    cols = np.tile(cols, num_nodes) + np.repeat(np.arange(num_nodes), nnz) * ncol
+
+    return data, rows, cols
+
+
+def _global2local_offsets(global_offsets):
+    """
+    Given existing global offsets, return a copy with offsets localized to each process.
+
+    Parameters
+    ----------
+    global_offsets : dict
+        Arrays of global offsets keyed by vec_name and deriv direction.
+
+    Returns
+    -------
+    dict
+        Arrays of local offsets keyed by vec_name and deriv direction.
+    """
+    offsets = {}
+    for vec_name in global_offsets:
+        offsets[vec_name] = off_vn = {}
+        for type_ in global_offsets[vec_name]:
+            goff = global_offsets[vec_name][type_]
+            off_vn[type_] = goff.copy()
+            if goff[0].size > 0:
+                # adjust offsets to be local in each process
+                off_vn[type_] -= goff[:, 0].reshape((goff.shape[0], 1))
+
+    return offsets
+
+
+def _flatten_src_indices(src_indices, shape_in, shape_out, size_out):
+    """
+    Convert src_indices into a flat, non-negative form.
+
+    Parameters
+    ----------
+    src_indices : ndarray
+        Array of src_indices.  Can be flat or multi-dimensional.
+    shape_in : tuple
+        Shape of the input variable.
+    shape_out : tuple
+        Shape of the output variable.
+    size_out : int
+        Size of the output variable.
+
+    Returns
+    -------
+    ndarray
+        The flattened src_indices.
+    """
+    if len(shape_out) == 1 or shape_in == src_indices.shape:
+        return convert_neg(src_indices.flatten(), size_out)
+
+    entries = [list(range(x)) for x in shape_in]
+    cols = np.vstack(src_indices[i] for i in product(*entries))
+    dimidxs = [convert_neg(cols[:, i], shape_out[i]) for i in range(cols.shape[1])]
+    return np.ravel_multi_index(dimidxs, shape_out)

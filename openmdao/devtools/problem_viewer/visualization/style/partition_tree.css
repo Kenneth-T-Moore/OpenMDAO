@@ -196,16 +196,19 @@ body {
     line-height: 0.75em;
     vertical-align: -15%;
 }
-.icon-resize-full:before { content: '\e800'; }
-.icon-resize-small:before { content: '\e801'; }
-.icon-left-big:before { content: '\e802'; }
-.icon-text-height:before { content: '\e803'; }
-.icon-right-big:before { content: '\e804'; }
-.icon-up-big:before { content: '\e805'; }
-.icon-home:before { content: '\e806'; }
-.icon-floppy:before { content: '\e807'; }
-.icon-resize-vertical:before { content: '\e808'; }
+
+/* To get SVG and PNG images of these icon fonts, use https://icomoon.io/app/#/select */
+.icon-home:before { content: '\e800'; }
+.icon-left-big:before { content: '\e801'; }
+.icon-right-big:before { content: '\e802'; }
+.icon-up-big:before { content: '\e803'; }
+.icon-resize-full:before { content: '\e804'; }
+.icon-resize-small:before { content: '\e805'; }
+.icon-text-height:before { content: '\e806'; }
+.icon-resize-vertical:before { content: '\e807'; }
+.icon-floppy:before { content: '\e808'; }
 .icon-search:before { content: '\e809'; }
+.icon-minus:before { content: '\e80a'; }
 .icon-exchange:before { content: '\f0ec'; }
 .icon-terminal:before { content: '\f120'; }
 .icon-help:before { content: '\f128'; }
@@ -254,4 +257,12 @@ body {
 .context-menu__link:hover {
   color: #fff;
   background-color: #0066aa;
+}
+
+.tool-tip {
+  z-index: 10;
+  font-size: 11px;
+  padding: 5;
+  background-color: #fff;
+  border: solid 1px #dfdfdf;   
 }

@@ -2,6 +2,7 @@
 
 import sys
 import unittest
+from math import atan
 
 from six.moves import cStringIO as StringIO
 from six.moves import range
@@ -9,7 +10,7 @@ from six.moves import range
 import numpy as np
 
 from openmdao.api import Problem, Group, IndepVarComp, DirectSolver, AnalysisError, \
-     ExplicitComponent, ImplicitComponent
+    ExplicitComponent, ImplicitComponent
 from openmdao.utils.assert_utils import assert_rel_error
 from openmdao.solvers.linesearch.backtracking import ArmijoGoldsteinLS, BoundsEnforceLS
 from openmdao.solvers.nonlinear.newton import NewtonSolver
@@ -123,46 +124,44 @@ class TestArmejoGoldsteinBounds(unittest.TestCase):
         top.run_model()
         self.assertTrue(2.4 <= top['comp.z'] <= 2.5)
 
-    def test_analysis_error(self):
 
-        class ParaboloidAE(ExplicitComponent):
-            """ Evaluates the equation f(x,y) = (x-3)^2 + xy + (y+4)^2 - 3
-            This version raises an analysis error if x < 2.0
-            The AE in ParaboloidAE stands for AnalysisError."""
+class ParaboloidAE(ExplicitComponent):
+    """ Evaluates the equation f(x,y) = (x-3)^2 + xy + (y+4)^2 - 3
+    This version raises an analysis error if x < 2.0
+    The AE in ParaboloidAE stands for AnalysisError."""
 
-            def __init__(self):
-                super(ParaboloidAE, self).__init__()
-                self.fail_hard = False
+    def setup(self):
+        self.add_input('x', val=0.0)
+        self.add_input('y', val=0.0)
 
-            def setup(self):
-                self.add_input('x', val=0.0)
-                self.add_input('y', val=0.0)
+        self.add_output('f_xy', val=0.0)
 
-                self.add_output('f_xy', val=0.0)
+        self.declare_partials(of='*', wrt='*')
 
-                self.declare_partials(of='*', wrt='*')
+    def compute(self, inputs, outputs):
+        """f(x,y) = (x-3)^2 + xy + (y+4)^2 - 3
+        Optimal solution (minimum): x = 6.6667; y = -7.3333
+        """
+        x = inputs['x']
+        y = inputs['y']
 
-            def compute(self, inputs, outputs):
-                """f(x,y) = (x-3)^2 + xy + (y+4)^2 - 3
-                Optimal solution (minimum): x = 6.6667; y = -7.3333
-                """
-                x = inputs['x']
-                y = inputs['y']
+        if x < 1.75:
+            raise AnalysisError('Try Again.')
 
-                if x < 1.75:
-                    raise AnalysisError('Try Again.')
+        outputs['f_xy'] = (x-3.0)**2 + x*y + (y+4.0)**2 - 3.0
 
-                outputs['f_xy'] = (x-3.0)**2 + x*y + (y+4.0)**2 - 3.0
+    def compute_partials(self, inputs, partials):
+        """ Jacobian for our paraboloid."""
+        x = inputs['x']
+        y = inputs['y']
 
-            def compute_partials(self, inputs, partials):
-                """ Jacobian for our paraboloid."""
-                x = inputs['x']
-                y = inputs['y']
-
-                partials['f_xy','x'] = 2.0*x - 6.0 + y
-                partials['f_xy','y'] = 2.0*y + 8.0 + x
+        partials['f_xy', 'x'] = 2.0*x - 6.0 + y
+        partials['f_xy', 'y'] = 2.0*y + 8.0 + x
 
 
+class TestAnalysisErrorExplicit(unittest.TestCase):
+
+    def setUp(self):
         top = Problem()
         top.model = Group()
         top.model.add_subsystem('px', IndepVarComp('x', 1.0))
@@ -180,7 +179,14 @@ class TestArmejoGoldsteinBounds(unittest.TestCase):
         ls.options['alpha'] = 1.0
         top.set_solver_print(level=0)
 
+        self.top = top
+        self.ls = ls
+
+    def test_retry(self):
+        # Test the behavior with the switch turned on.
+        top = self.top
         top.setup(check=False)
+        self.ls.options['retry_on_analysis_error'] = True
 
         # Test lower bound: should go as far as it can without going past 1.75 and triggering an
         # AnalysisError. It doesn't do a great job, so ends up at 1.8 instead of 1.75
@@ -190,26 +196,11 @@ class TestArmejoGoldsteinBounds(unittest.TestCase):
         top.run_model()
         assert_rel_error(self, top['comp.z'], 1.8, 1e-8)
 
+    def test_no_retry(self):
         # Test the behavior with the switch turned off.
+        self.ls.options['retry_on_analysis_error'] = False
 
-        top = Problem()
-        top.model = Group()
-        top.model.add_subsystem('px', IndepVarComp('x', 1.0))
-        top.model.add_subsystem('comp', ImplCompTwoStates())
-        top.model.add_subsystem('par', ParaboloidAE())
-        top.model.connect('px.x', 'comp.x')
-        top.model.connect('comp.z', 'par.x')
-
-        top.model.nonlinear_solver = NewtonSolver()
-        top.model.nonlinear_solver.options['maxiter'] = 1
-        top.model.linear_solver = ScipyKrylov()
-
-        ls = top.model.nonlinear_solver.linesearch = ArmijoGoldsteinLS(bound_enforcement='vector')
-        ls.options['maxiter'] = 10
-        ls.options['alpha'] = 1.0
-        ls.options['retry_on_analysis_error'] = False
-        top.set_solver_print(level=0)
-
+        top = self.top
         top.setup(check=False)
 
         top['px.x'] = 2.0
@@ -221,52 +212,61 @@ class TestArmejoGoldsteinBounds(unittest.TestCase):
 
         self.assertEqual(str(context.exception), 'Try Again.')
 
+
+class ImplCompTwoStatesAE(ImplicitComponent):
+
+    def setup(self):
+        self.add_input('x', 0.5)
+        self.add_output('y', 0.0)
+        self.add_output('z', 2.0, lower=1.5, upper=2.5)
+
+        self.maxiter = 10
+        self.atol = 1.0e-12
+
+        self.declare_partials(of='*', wrt='*')
+
+        self.counter = 0
+
+    def apply_nonlinear(self, inputs, outputs, residuals):
+        """
+        Don't solve; just calculate the residual.
+        """
+
+        x = inputs['x']
+        y = outputs['y']
+        z = outputs['z']
+
+        residuals['y'] = y - x - 2.0*z
+        residuals['z'] = x*z + z - 4.0
+
+        self.counter += 1
+        if self.counter > 5 and self.counter < 11:
+            raise AnalysisError('catch me')
+
+    def linearize(self, inputs, outputs, jac):
+        """
+        Analytical derivatives.
+        """
+
+        # Output equation
+        jac[('y', 'x')] = -1.0
+        jac[('y', 'y')] = 1.0
+        jac[('y', 'z')] = -2.0
+
+        # State equation
+        jac[('z', 'z')] = -inputs['x'] + 1.0
+        jac[('z', 'x')] = -outputs['z']
+
+
+class ImplCompTwoStatesGuess(ImplCompTwoStatesAE):
+
+    def guess_nonlinear(self, inputs, outputs, residuals):
+        outputs['z'] = 3.0
+
+
+class TestAnalysisErrorImplicit(unittest.TestCase):
+
     def test_deep_analysis_error_iprint(self):
-
-        class ImplCompTwoStatesAE(ImplicitComponent):
-
-            def setup(self):
-                self.add_input('x', 0.5)
-                self.add_output('y', 0.0)
-                self.add_output('z', 2.0, lower=1.5, upper=2.5)
-
-                self.maxiter = 10
-                self.atol = 1.0e-12
-
-                self.declare_partials(of='*', wrt='*')
-
-                self.counter = 0
-
-            def apply_nonlinear(self, inputs, outputs, residuals):
-                """
-                Don't solve; just calculate the residual.
-                """
-
-                x = inputs['x']
-                y = outputs['y']
-                z = outputs['z']
-
-                residuals['y'] = y - x - 2.0*z
-                residuals['z'] = x*z + z - 4.0
-
-                self.counter += 1
-                if self.counter > 5 and self.counter < 11:
-                    raise AnalysisError('catch me')
-
-            def linearize(self, inputs, outputs, jac):
-                """
-                Analytical derivatives.
-                """
-
-                # Output equation
-                jac[('y', 'x')] = -1.0
-                jac[('y', 'y')] = 1.0
-                jac[('y', 'z')] = -2.0
-
-                # State equation
-                jac[('z', 'z')] = -inputs['x'] + 1.0
-                jac[('z', 'x')] = -outputs['z']
-
 
         top = Problem()
         top.model = Group()
@@ -305,7 +305,64 @@ class TestArmejoGoldsteinBounds(unittest.TestCase):
             sys.stdout = stdout
 
         output = strout.getvalue().split('\n')
-        self.assertTrue(output[26].startswith('|  LS: AG 5'))
+
+        correct = False
+        for line in output:
+            # make sure a line starting with this string is present in stdout
+            if line.startswith('|  LS: AG 3'):
+                correct = True
+                break
+        self.assertTrue(correct, msg='Expected line search output not found in stdout')
+
+    def test_read_only_bug(self):
+        # this tests for a bug in which guess_nonlinear failed due to the output
+        # vector being left in a read only state after the AnalysisError
+
+        top = Problem()
+        top.model = Group()
+        top.model.add_subsystem('px', IndepVarComp('x', 7.0))
+
+        sub = top.model.add_subsystem('sub', Group())
+        sub.add_subsystem('comp', ImplCompTwoStatesGuess())
+
+        top.model.connect('px.x', 'sub.comp.x')
+
+        top.model.nonlinear_solver = NewtonSolver()
+        top.model.nonlinear_solver.options['maxiter'] = 2
+        top.model.nonlinear_solver.options['solve_subsystems'] = True
+        top.model.linear_solver = ScipyKrylov()
+
+        sub.nonlinear_solver = NewtonSolver()
+        sub.nonlinear_solver.options['maxiter'] = 2
+        sub.linear_solver = ScipyKrylov()
+
+        ls = top.model.nonlinear_solver.linesearch = ArmijoGoldsteinLS(bound_enforcement='wall')
+        ls.options['maxiter'] = 5
+        ls.options['alpha'] = 10.0
+        ls.options['retry_on_analysis_error'] = True
+        ls.options['c'] = 10000.0
+
+        top.setup(check=False)
+        top.set_solver_print(level=2)
+
+        stdout = sys.stdout
+        strout = StringIO()
+
+        sys.stdout = strout
+        try:
+            top.run_model()
+        finally:
+            sys.stdout = stdout
+
+        output = strout.getvalue().split('\n')
+
+        correct = False
+        for line in output:
+            # make sure a line starting with this string is present in stdout
+            if line.startswith('|  LS: AG 3'):
+                correct = True
+                break
+        self.assertTrue(correct, msg='Expected line search output not found in stdout')
 
 
 class TestBoundsEnforceLSArrayBounds(unittest.TestCase):
@@ -414,7 +471,7 @@ class TestBoundsEnforceLSArrayBounds(unittest.TestCase):
             self.assertTrue(2.4 <= top['comp.z'][ind] <= self.ub[ind])
 
     def test_error_handling(self):
-        # Make sure the debug_print doen't bomb out.
+        # Make sure the debug_print doesn't bomb out.
 
         class Bad(ExplicitComponent):
 
@@ -441,9 +498,8 @@ class TestBoundsEnforceLSArrayBounds(unittest.TestCase):
                 x = inputs['x']
                 y = inputs['y']
 
-                partials['f_xy','x'] = 2.0*x - 6.0 + y
-                partials['f_xy','y'] = 2.0*y + 8.0 + x
-
+                partials['f_xy', 'x'] = 2.0*x - 6.0 + y
+                partials['f_xy', 'y'] = 2.0*y + 8.0 + x
 
         top = Problem()
         top.model = Group()
@@ -456,14 +512,42 @@ class TestBoundsEnforceLSArrayBounds(unittest.TestCase):
         top.model.nonlinear_solver = NewtonSolver()
         top.model.nonlinear_solver.options['maxiter'] = 3
 
-        ls = top.model.nonlinear_solver.linesearch = BoundsEnforceLS(bound_enforcement='vector')
-        ls.options['maxiter'] = 10
+        top.model.nonlinear_solver.linesearch = BoundsEnforceLS(bound_enforcement='vector')
         top.set_solver_print(level=0)
 
         top.setup(check=False)
 
         # Make sure we don't raise an error when we reach the final debug print.
         top.run_model()
+
+    def test_undeclared_options(self):
+        # Test that using options that should not exist in class, cause an
+        # error if they are set when instantiating BoundsEnforceLS.
+        # atol, rtol, maxiter, and err_on_maxiter are not used in BoundsEnforceLS
+
+        with self.assertRaises(KeyError) as context:
+            BoundsEnforceLS(bound_enforcement='scalar', atol=1.0)
+
+        self.assertEqual(str(context.exception), "\"Option 'atol' cannot be set because it "
+                                                 "has not been declared.\"")
+
+        with self.assertRaises(KeyError) as context:
+            BoundsEnforceLS(bound_enforcement='scalar', rtol=2.0)
+
+        self.assertEqual(str(context.exception), "\"Option 'rtol' cannot be set because it "
+                                                 "has not been declared.\"")
+
+        with self.assertRaises(KeyError) as context:
+            BoundsEnforceLS(bound_enforcement='scalar', maxiter=1)
+
+        self.assertEqual(str(context.exception), "\"Option 'maxiter' cannot be set because it "
+                                                 "has not been declared.\"")
+
+        with self.assertRaises(KeyError) as context:
+            BoundsEnforceLS(bound_enforcement='scalar', err_on_maxiter=True)
+
+        self.assertEqual(str(context.exception), "\"Option 'err_on_maxiter' cannot be set because it "
+                                                 "has not been declared.\"")
 
 
 class TestArmijoGoldsteinLSArrayBounds(unittest.TestCase):
@@ -593,32 +677,75 @@ class TestArmijoGoldsteinLSArrayBounds(unittest.TestCase):
         assert_rel_error(self, prob['g2.y2'], 0.80, .00001)
 
 
+class CompAtan(ImplicitComponent):
+    """
+    A simple implicit component with the following equation:
+
+    F(x, y) = 33.0 * atan(y-20)**2 + x
+
+    x is an input, y is the state to be solved.
+    for x = -100, y should be 19.68734033
+
+    This equation poses a challenge because a guess that is far from the solution yields large
+    gradients and divergence. Additionally, the jacobian becomes singular at y = 20. To address
+    this, a lower and upper bound are added on y so that a solver with a BoundsEnforceLS does not
+    allow it to stray into problematic regions.
+    """
+
+    def setup(self):
+        self.add_input('x', 1.0)
+        self.add_output('y', 1.0, lower=1.0, upper=19.9)
+
+        self.declare_partials(of='y', wrt='x')
+        self.declare_partials(of='y', wrt='y')
+
+    def apply_nonlinear(self, inputs, outputs, residuals):
+        x = inputs['x']
+        y = outputs['y']
+
+        residuals['y'] = (33.0 * atan(y-20.0))**2 + x
+
+    def linearize(self, inputs, outputs, jacobian):
+        x = inputs['x']
+        y = outputs['y']
+
+        jacobian['y', 'y'] = 2178.0*atan(y-20.0) / (y**2 - 40.0*y + 401.0)
+        jacobian['y', 'x'] = 1.0
+
+
 class TestFeatureLineSearch(unittest.TestCase):
 
     def test_feature_specification(self):
-        from openmdao.api import Problem, Group, IndepVarComp, NewtonSolver, ScipyKrylov, ArmijoGoldsteinLS
-        from openmdao.test_suite.components.implicit_newton_linesearch import ImplCompTwoStates
+        from openmdao.api import Problem, IndepVarComp, NewtonSolver, BoundsEnforceLS
+        from openmdao.api import DirectSolver
+        from openmdao.solvers.linesearch.tests.test_backtracking import CompAtan
 
-        top = Problem()
-        top.model = Group()
-        top.model.add_subsystem('px', IndepVarComp('x', 1.0))
-        top.model.add_subsystem('comp', ImplCompTwoStates())
-        top.model.connect('px.x', 'comp.x')
+        prob = Problem()
+        model = prob.model
 
-        top.model.nonlinear_solver = NewtonSolver()
-        top.model.nonlinear_solver.options['maxiter'] = 10
-        top.model.linear_solver = ScipyKrylov()
+        model.add_subsystem('px', IndepVarComp('x', -100.0))
+        model.add_subsystem('comp', CompAtan())
 
-        ls = top.model.nonlinear_solver.linesearch = ArmijoGoldsteinLS()
-        ls.options['maxiter'] = 10
+        model.connect('px.x', 'comp.x')
 
-        top.setup(check=False)
+        prob.setup()
 
-        top['px.x'] = 2.0
-        top['comp.y'] = 0.0
-        top['comp.z'] = 1.6
-        top.run_model()
-        assert_rel_error(self, top['comp.z'], 1.5, 1e-8)
+        # Initial value for the state:
+        prob['comp.y'] = 12.0
+
+        # You can change the NewtonSolver settings after setup is called
+        newton = prob.model.nonlinear_solver = NewtonSolver()
+        prob.model.linear_solver = DirectSolver()
+        newton.options['iprint'] = 2
+        newton.options['rtol'] = 1e-8
+        newton.options['solve_subsystems'] = True
+
+        newton.linesearch = BoundsEnforceLS()
+        newton.linesearch.options['iprint'] = 2
+
+        prob.run_model()
+
+        assert_rel_error(self, prob['comp.y'], 19.68734033, 1e-6)
 
     def test_feature_boundsenforcels_basic(self):
         import numpy as np
@@ -961,6 +1088,7 @@ class TestFeatureLineSearch(unittest.TestCase):
         assert_rel_error(self, top['comp.z'][0], [1.5], 1e-8)
         assert_rel_error(self, top['comp.z'][1], [1.5], 1e-8)
         assert_rel_error(self, top['comp.z'][2], [1.5], 1e-8)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,3 +1,5 @@
+.. _case_recording:
+
 **************
 Recording Data
 **************
@@ -5,5 +7,7 @@ Recording Data
 .. toctree::
     :maxdepth: 1
 
-    basic_recording.rst
-    case_reading.rst
+    saving_data.rst
+    iterating_over_data.rst
+    reading_data.rst
+    reading_metadata.rst

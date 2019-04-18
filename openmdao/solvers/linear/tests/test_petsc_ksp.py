@@ -3,7 +3,6 @@
 from __future__ import division, print_function
 
 import unittest
-import warnings
 
 import numpy as np
 
@@ -20,7 +19,7 @@ except ImportError:
 
 from openmdao.test_suite.groups.implicit_group import TestImplicitGroup
 
-from openmdao.utils.assert_utils import assert_rel_error
+from openmdao.utils.assert_utils import assert_rel_error, assert_warning
 
 
 @unittest.skipUnless(PETScVector, "PETSc is required.")
@@ -39,15 +38,13 @@ class TestPETScKrylov(unittest.TestCase):
 
         # use PetscKSP here to check for deprecation warning and verify that the deprecated
         # class still gets the right answer without duplicating this test.
-        with warnings.catch_warnings(record=True) as w:
+        msg = "PetscKSP is deprecated.  Use PETScKrylov instead."
+
+        with assert_warning(DeprecationWarning, msg):
             group = TestImplicitGroup(lnSolverClass=PetscKSP)
 
-        self.assertEqual(len(w), 1)
-        self.assertTrue(issubclass(w[0].category, DeprecationWarning))
-        self.assertEqual(str(w[0].message), "PetscKSP is deprecated.  Use PETScKrylov instead.")
-
         p = Problem(group)
-        p.setup(vector_class=PETScVector, check=False)
+        p.setup(check=False)
         p.set_solver_print(level=0)
 
         # Conclude setup but don't run model.
@@ -61,8 +58,7 @@ class TestPETScKrylov(unittest.TestCase):
         group.run_solve_linear(['linear'], 'fwd')
 
         output = d_outputs._data
-        assert_rel_error(self, output[1], group.expected_solution[0], 1e-15)
-        assert_rel_error(self, output[5], group.expected_solution[1], 1e-15)
+        assert_rel_error(self, output, group.expected_solution, 1e-15)
 
         # reverse
         d_outputs.set_const(1.0)
@@ -70,17 +66,16 @@ class TestPETScKrylov(unittest.TestCase):
         group.run_solve_linear(['linear'], 'rev')
 
         output = d_residuals._data
-        assert_rel_error(self, output[1], group.expected_solution[0], 1e-15)
-        assert_rel_error(self, output[5], group.expected_solution[1], 1e-15)
+        assert_rel_error(self, output, group.expected_solution, 1e-15)
 
     def test_solve_linear_ksp_gmres(self):
         """Solve implicit system with PETScKrylov using 'gmres' method."""
 
-        group = TestImplicitGroup(lnSolverClass=PETScKrylov, use_varsets=False)
+        group = TestImplicitGroup(lnSolverClass=PETScKrylov)
         group.linear_solver.options['ksp_type'] = 'gmres'
 
         p = Problem(group)
-        p.setup(vector_class=PETScVector, check=False)
+        p.setup(check=False)
         p.set_solver_print(level=0)
 
         # Conclude setup but don't run model.
@@ -94,7 +89,7 @@ class TestPETScKrylov(unittest.TestCase):
         group.run_solve_linear(['linear'], 'fwd')
 
         output = d_outputs._data
-        assert_rel_error(self, output[0], group.expected_solution[0], 1e-15)
+        assert_rel_error(self, output, group.expected_solution, 1e-15)
 
         # reverse
         d_outputs.set_const(1.0)
@@ -102,7 +97,7 @@ class TestPETScKrylov(unittest.TestCase):
         group.run_solve_linear(['linear'], 'rev')
 
         output = d_residuals._data
-        assert_rel_error(self, output[0], group.expected_solution[0], 1e-15)
+        assert_rel_error(self, output, group.expected_solution, 1e-15)
 
     def test_solve_linear_ksp_maxiter(self):
         """Verify that PETScKrylov abides by the 'maxiter' option."""
@@ -111,7 +106,7 @@ class TestPETScKrylov(unittest.TestCase):
         group.linear_solver.options['maxiter'] = 2
 
         p = Problem(group)
-        p.setup(vector_class=PETScVector, check=False)
+        p.setup(check=False)
         p.set_solver_print(level=0)
 
         # Conclude setup but don't run model.
@@ -140,7 +135,7 @@ class TestPETScKrylov(unittest.TestCase):
         precon = group.linear_solver.precon = LinearBlockGS()
 
         p = Problem(group)
-        p.setup(vector_class=PETScVector, check=False)
+        p.setup(check=False)
         p.set_solver_print(level=0)
 
         # Conclude setup but don't run model.
@@ -154,8 +149,7 @@ class TestPETScKrylov(unittest.TestCase):
         group.run_solve_linear(['linear'], 'fwd')
 
         output = d_outputs._data
-        assert_rel_error(self, output[1], group.expected_solution[0], 1e-15)
-        assert_rel_error(self, output[5], group.expected_solution[1], 1e-15)
+        assert_rel_error(self, output, group.expected_solution, 1e-15)
 
         self.assertTrue(precon._iter_count > 0)
 
@@ -165,14 +159,13 @@ class TestPETScKrylov(unittest.TestCase):
         group.run_solve_linear(['linear'], 'rev')
 
         output = d_residuals._data
-        assert_rel_error(self, output[1], group.expected_solution[0], 3e-15)
-        assert_rel_error(self, output[5], group.expected_solution[1], 3e-15)
+        assert_rel_error(self, output, group.expected_solution, 3e-15)
 
         self.assertTrue(precon._iter_count > 0)
 
         # test the direct solver and make sure KSP correctly recurses for _linearize
-        precon = group.linear_solver.precon = DirectSolver()
-        p.setup(vector_class=PETScVector, check=False)
+        precon = group.linear_solver.precon = DirectSolver(assemble_jac=False)
+        p.setup(check=False)
 
         # Conclude setup but don't run model.
         p.final_setup()
@@ -186,8 +179,7 @@ class TestPETScKrylov(unittest.TestCase):
         group.run_solve_linear(['linear'], 'fwd')
 
         output = d_outputs._data
-        assert_rel_error(self, output[1], group.expected_solution[0], 1e-15)
-        assert_rel_error(self, output[5], group.expected_solution[1], 1e-15)
+        assert_rel_error(self, output, group.expected_solution, 1e-15)
 
         # reverse
         d_outputs.set_const(1.0)
@@ -196,19 +188,18 @@ class TestPETScKrylov(unittest.TestCase):
         group.run_solve_linear(['linear'], 'rev')
 
         output = d_residuals._data
-        assert_rel_error(self, output[1], group.expected_solution[0], 3e-15)
-        assert_rel_error(self, output[5], group.expected_solution[1], 3e-15)
+        assert_rel_error(self, output, group.expected_solution, 3e-15)
 
     def test_solve_linear_ksp_precon_left(self):
         """Solve implicit system with PETScKrylov using a preconditioner."""
 
         group = TestImplicitGroup(lnSolverClass=PETScKrylov)
-        precon = group.linear_solver.precon = DirectSolver()
+        precon = group.linear_solver.precon = DirectSolver(assemble_jac=False)
         group.linear_solver.options['precon_side'] = 'left'
         group.linear_solver.options['ksp_type'] = 'richardson'
 
         p = Problem(group)
-        p.setup(vector_class=PETScVector, check=False)
+        p.setup(check=False)
         p.set_solver_print(level=0)
 
         # Conclude setup but don't run model.
@@ -223,8 +214,7 @@ class TestPETScKrylov(unittest.TestCase):
         group.run_solve_linear(['linear'], 'fwd')
 
         output = d_outputs._data
-        assert_rel_error(self, output[1], group.expected_solution[0], 1e-15)
-        assert_rel_error(self, output[5], group.expected_solution[1], 1e-15)
+        assert_rel_error(self, output, group.expected_solution, 1e-15)
 
         # reverse
         d_outputs.set_const(1.0)
@@ -233,15 +223,14 @@ class TestPETScKrylov(unittest.TestCase):
         group.run_solve_linear(['linear'], 'rev')
 
         output = d_residuals._data
-        assert_rel_error(self, output[1], group.expected_solution[0], 3e-15)
-        assert_rel_error(self, output[5], group.expected_solution[1], 3e-15)
+        assert_rel_error(self, output, group.expected_solution, 3e-15)
 
         # test the direct solver and make sure KSP correctly recurses for _linearize
-        precon = group.linear_solver.precon = DirectSolver()
+        precon = group.linear_solver.precon = DirectSolver(assemble_jac=False)
         group.linear_solver.options['precon_side'] = 'left'
         group.linear_solver.options['ksp_type'] = 'richardson'
 
-        p.setup(vector_class=PETScVector, check=False)
+        p.setup(check=False)
 
         # Conclude setup but don't run model.
         p.final_setup()
@@ -255,8 +244,7 @@ class TestPETScKrylov(unittest.TestCase):
         group.run_solve_linear(['linear'], 'fwd')
 
         output = d_outputs._data
-        assert_rel_error(self, output[1], group.expected_solution[0], 1e-15)
-        assert_rel_error(self, output[5], group.expected_solution[1], 1e-15)
+        assert_rel_error(self, output, group.expected_solution, 1e-15)
 
         # reverse
         d_outputs.set_const(1.0)
@@ -265,31 +253,21 @@ class TestPETScKrylov(unittest.TestCase):
         group.run_solve_linear(['linear'], 'rev')
 
         output = d_residuals._data
-        assert_rel_error(self, output[1], group.expected_solution[0], 3e-15)
-        assert_rel_error(self, output[5], group.expected_solution[1], 3e-15)
+        assert_rel_error(self, output, group.expected_solution, 3e-15)
 
     def test_preconditioner_deprecation(self):
 
         group = TestImplicitGroup(lnSolverClass=PETScKrylov)
 
         msg = "The 'preconditioner' property provides backwards compatibility " \
-            + "with OpenMDAO <= 1.x ; use 'precon' instead."
+              "with OpenMDAO <= 1.x ; use 'precon' instead."
 
-        # check deprecation on setter
-        with warnings.catch_warnings(record=True) as w:
+        # check deprecation on setter & getter
+        with assert_warning(DeprecationWarning, msg):
             precon = group.linear_solver.preconditioner = LinearBlockGS()
 
-        self.assertEqual(len(w), 1)
-        self.assertTrue(issubclass(w[0].category, DeprecationWarning))
-        self.assertEqual(str(w[0].message), msg)
-
-        # check deprecation on getter
-        with warnings.catch_warnings(record=True) as w:
+        with assert_warning(DeprecationWarning, msg):
             pre = group.linear_solver.preconditioner
-
-        self.assertEqual(len(w), 1)
-        self.assertTrue(issubclass(w[0].category, DeprecationWarning))
-        self.assertEqual(str(w[0].message), msg)
 
     def test_solve_on_subsystem(self):
         """solve an implicit system with KSP attached anywhere but the root"""
@@ -303,7 +281,7 @@ class TestPETScKrylov(unittest.TestCase):
 
         g1 = model.add_subsystem('g1', TestImplicitGroup(lnSolverClass=PETScKrylov))
 
-        p.setup(vector_class=PETScVector, check=False)
+        p.setup(check=False)
 
         p.set_solver_print(level=0)
 
@@ -317,10 +295,7 @@ class TestPETScKrylov(unittest.TestCase):
         g1.run_solve_linear(['linear'], 'fwd')
 
         output = d_outputs._data
-        # The empty first entry in _data is due to the dummy
-        #     variable being in a different variable set not owned by g1
-        assert_rel_error(self, output[1], g1.expected_solution[0], 1e-15)
-        assert_rel_error(self, output[5], g1.expected_solution[1], 1e-15)
+        assert_rel_error(self, output, g1.expected_solution, 1e-15)
 
         # reverse
         d_inputs, d_outputs, d_residuals = g1.get_linear_vectors()
@@ -331,8 +306,7 @@ class TestPETScKrylov(unittest.TestCase):
         g1.run_solve_linear(['linear'], 'rev')
 
         output = d_residuals._data
-        assert_rel_error(self, output[1], g1.expected_solution[0], 3e-15)
-        assert_rel_error(self, output[5], g1.expected_solution[1], 3e-15)
+        assert_rel_error(self, output, g1.expected_solution, 3e-15)
 
     def test_linear_solution_cache(self):
         # Test derivatives across a converged Sellar model. When caching
@@ -394,6 +368,39 @@ class TestPETScKrylov(unittest.TestCase):
 
         # Should take less iterations when starting from previous solution.
         self.assertTrue(icount2 < icount1)
+
+    def test_error_under_cs(self):
+        """Verify that PETScKrylov abides by the 'maxiter' option."""
+        prob = Problem()
+        model = prob.model = Group()
+
+        model.add_subsystem('px', IndepVarComp('x', 1.0), promotes=['x'])
+        model.add_subsystem('pz', IndepVarComp('z', np.array([5.0, 2.0])), promotes=['z'])
+
+        model.add_subsystem('d1', SellarDis1withDerivatives(), promotes=['x', 'z', 'y1', 'y2'])
+        model.add_subsystem('d2', SellarDis2withDerivatives(), promotes=['z', 'y1', 'y2'])
+
+        model.add_subsystem('obj_cmp', ExecComp('obj = x**2 + z[1] + y1 + exp(-y2)',
+                                                z=np.array([0.0, 0.0]), x=0.0),
+                            promotes=['obj', 'x', 'z', 'y1', 'y2'])
+
+        model.add_subsystem('con_cmp1', ExecComp('con1 = 3.16 - y1'), promotes=['con1', 'y1'])
+        model.add_subsystem('con_cmp2', ExecComp('con2 = y2 - 24.0'), promotes=['con2', 'y2'])
+
+        model.nonlinear_solver = NewtonSolver()
+        model.linear_solver = PETScKrylov()
+
+        model.approx_totals(method='cs')
+
+        prob.setup(mode='fwd')
+        prob.set_solver_print(level=0)
+        prob.run_model()
+
+        with self.assertRaises(RuntimeError) as cm:
+            J = prob.compute_totals(of=['obj'], wrt=['z'])
+
+        msg = 'PETScKrylov solver is not supported under complex step.'
+        self.assertEqual(str(cm.exception), msg)
 
 
 @unittest.skipUnless(PETScVector, "PETSc is required.")
@@ -508,8 +515,8 @@ class TestPETScKrylovSolverFeature(unittest.TestCase):
         of = ['obj']
 
         J = prob.compute_totals(of=of, wrt=wrt, return_format='flat_dict')
-        assert_rel_error(self, J['obj', 'z'][0][0], 9.2654054431, .00001)
-        assert_rel_error(self, J['obj', 'z'][0][1], 1.87246623559, .00001)
+        assert_rel_error(self, J['obj', 'z'][0][0], 4.93218027, .00001)
+        assert_rel_error(self, J['obj', 'z'][0][1], 1.73406455, .00001)
 
     def test_feature_atol(self):
         import numpy as np

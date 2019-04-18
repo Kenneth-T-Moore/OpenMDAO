@@ -10,7 +10,11 @@ import collections
 import re
 from six import PY3
 
-from numpydoc.docscrape import NumpyDocString
+try:
+    from numpydoc.docscrape import NumpyDocString
+except ImportError:
+    NumpyDocString = None
+
 
 # directories in which we do not wish to lint for docstrings/parameters.
 exclude = [
@@ -330,6 +334,7 @@ class LintTestCase(unittest.TestCase):
 
         return new_failures
 
+    @unittest.skipUnless(NumpyDocString, "requires 'NumpyDocString', install openmdao[test]")
     def check_method(self, dir_name, file_name,
                      class_name, method_name, method, failures):
         """
@@ -412,6 +417,7 @@ class LintTestCase(unittest.TestCase):
             else:
                 failures[key] = new_failures
 
+    @unittest.skipUnless(NumpyDocString, "requires 'NumpyDocString', install openmdao[test]")
     def check_function(self, dir_name, file_name, func_name, func, failures):
         """ Perform docstring checks on a function.
 
@@ -509,7 +515,7 @@ class LintTestCase(unittest.TestCase):
 
                     # Loop over classes
                     classes = [x for x in dir(mod)
-                               if inspect.isclass(getattr(mod, x)) and
+                               if not x.startswith('_') and inspect.isclass(getattr(mod, x)) and
                                getattr(mod, x).__module__ == module_name]
 
                     for class_name in classes:
@@ -545,9 +551,10 @@ class LintTestCase(unittest.TestCase):
                         funcs = []
 
                     for func_name in funcs:
-                        func = getattr(mod, func_name)
-                        self.check_function(dir_name, file_name, func_name,
-                                            func, failures)
+                        if not func_name.startswith('_'):
+                            func = getattr(mod, func_name)
+                            self.check_function(dir_name, file_name, func_name,
+                                                func, failures)
 
         if failures:
             msg = '\n'

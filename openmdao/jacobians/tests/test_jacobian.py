@@ -2,7 +2,6 @@
 
 import itertools
 import unittest
-from parameterized import parameterized
 
 from six import assertRaisesRegex
 from six.moves import range
@@ -13,12 +12,16 @@ from scipy.sparse import coo_matrix, csr_matrix
 from openmdao.api import IndepVarComp, Group, Problem, \
                          ExplicitComponent, ImplicitComponent, ExecComp, \
                          NewtonSolver, ScipyKrylov, \
-                         DenseJacobian, CSRJacobian, CSCJacobian, COOJacobian, \
                          LinearBlockGS, DirectSolver
 from openmdao.utils.assert_utils import assert_rel_error
 from openmdao.test_suite.components.paraboloid import Paraboloid
 from openmdao.test_suite.components.sellar import SellarDis1withDerivatives, \
      SellarDis2withDerivatives
+
+try:
+    from parameterized import parameterized
+except ImportError:
+    from openmdao.utils.assert_utils import SkipParameterized as parameterized
 
 
 class MyExplicitComp(ExplicitComponent):
@@ -194,23 +197,23 @@ def _test_func_name(func, num, param):
 class TestJacobian(unittest.TestCase):
 
     @parameterized.expand(itertools.product(
-        [DenseJacobian, CSRJacobian, CSCJacobian, COOJacobian],
+        ['dense', 'csc'],
         [np.array, coo_matrix, csr_matrix, inverted_coo, inverted_csr, arr2list, arr2revlist],
         [False, True],  # not nested, nested
         [0, 1],  # extra calls to linearize
-        ), testcase_func_name=_test_func_name
+        ), name_func=_test_func_name
     )
-    def test_src_indices(self, jacobian_class, comp_jac_class, nested, lincalls):
+    def test_src_indices(self, assembled_jac, comp_jac_class, nested, lincalls):
 
-        self._setup_model(jacobian_class, comp_jac_class, nested, lincalls)
+        self._setup_model(assembled_jac, comp_jac_class, nested, lincalls)
 
         # if we multiply our jacobian (at x,y = ones) by our work vec of 1's,
         # we get fwd_check
-        fwd_check = np.array([1.0, 1.0, 1.0, 1.0, 1.0, -24., -74., -8.])
+        fwd_check = np.array([-1.0, -1.0, -1.0, -1.0, -1.0, 24., 74., 8.])
 
         # if we multiply our jacobian's transpose by our work vec of 1's,
         # we get rev_check
-        rev_check = np.array([-35., -5., 9., -63., -3., 1., -6., 1.])
+        rev_check = np.array([35., 5., -9., 63., 3., -1., 6., -1.])
 
         self._check_fwd(self.prob, fwd_check)
         # to catch issues with constant subjacobians, repeatedly call linearize
@@ -219,7 +222,7 @@ class TestJacobian(unittest.TestCase):
         self._check_fwd(self.prob, fwd_check)
         self._check_rev(self.prob, rev_check)
 
-    def _setup_model(self, jac_class, comp_jac_class, nested, lincalls):
+    def _setup_model(self, assembled_jac, comp_jac_class, nested, lincalls):
         self.prob = prob = Problem(model=Group())
         if nested:
             top = prob.model.add_subsystem('G1', Group())
@@ -237,11 +240,12 @@ class TestJacobian(unittest.TestCase):
         top.connect('indep.a', 'C2.w', src_indices=[0,2,1])
         top.connect('C1.f', 'C2.z', src_indices=[1])
 
-        top.jacobian = jac_class()
         top.nonlinear_solver = NewtonSolver()
         top.nonlinear_solver.linear_solver = ScipyKrylov(maxiter=100)
         top.linear_solver = ScipyKrylov(
-            maxiter=200, atol=1e-10, rtol=1e-10)
+            maxiter=200, atol=1e-10, rtol=1e-10, assemble_jac=True)
+        top.options['assembled_jac_type'] = assembled_jac
+
         prob.set_solver_print(level=0)
 
         prob.setup(check=False)
@@ -257,12 +261,12 @@ class TestJacobian(unittest.TestCase):
         # fwd apply_linear test
         d_outputs.set_const(1.0)
         prob.model.run_apply_linear(['linear'], 'fwd')
-        d_residuals.set_data(d_residuals.get_data() - check_vec)
+        d_residuals._data[:] = d_residuals._data - check_vec
         self.assertAlmostEqual(d_residuals.get_norm(), 0)
 
         # fwd solve_linear test
         d_outputs.set_const(0.0)
-        d_residuals.set_data(check_vec)
+        d_residuals._data[:] = check_vec
 
         prob.model.run_solve_linear(['linear'], 'fwd')
 
@@ -278,12 +282,12 @@ class TestJacobian(unittest.TestCase):
         # rev apply_linear test
         d_residuals.set_const(1.0)
         prob.model.run_apply_linear(['linear'], 'rev')
-        d_outputs.set_data(d_outputs.get_data() - check_vec)
+        d_outputs._data[:] = d_outputs._data - check_vec
         self.assertAlmostEqual(d_outputs.get_norm(), 0)
 
         # rev solve_linear test
         d_residuals.set_const(0.0)
-        d_outputs.set_data(check_vec)
+        d_outputs._data[:] = check_vec
         prob.model.run_solve_linear(['linear'], 'rev')
         d_residuals -= work
         self.assertAlmostEqual(d_residuals.get_norm(), 0, delta=1e-6)
@@ -301,7 +305,7 @@ class TestJacobian(unittest.TestCase):
          (3, 3))
     ]
 
-    @parameterized.expand(itertools.product(dtypes, shapes), testcase_func_name=
+    @parameterized.expand(itertools.product(dtypes, shapes), name_func=
     lambda f, n, p: '_'.join(['test_jacobian_set_item', p.args[0][0], p.args[1][0]]))
     def test_jacobian_set_item(self, dtypes, shapes):
 
@@ -319,44 +323,13 @@ class TestJacobian(unittest.TestCase):
         prob.model.run_linearize()
 
         expected = constructor(value)
-        with prob.model._subsystems_allprocs[0].jacobian_context() as J:
-            jac_out = J['out', 'in'] * -1
+        J = prob.model._subsystems_allprocs[0]._jacobian
+        jac_out = J['out', 'in']
 
         self.assertEqual(len(jac_out.shape), 2)
         expected_dtype = np.promote_types(dtype, float)
         self.assertEqual(jac_out.dtype, expected_dtype)
         assert_rel_error(self, jac_out, np.atleast_2d(expected).reshape(expected_shape), 1e-15)
-
-    def test_component_assembled_jac(self):
-        prob = Problem()
-        model = prob.model = Group()
-
-        model.add_subsystem('px', IndepVarComp('x', 1.0), promotes=['x'])
-        model.add_subsystem('pz', IndepVarComp('z', np.array([5.0, 2.0])), promotes=['z'])
-
-        model.add_subsystem('d1', SellarDis1withDerivatives(), promotes=['x', 'z', 'y1', 'y2'])
-        model.add_subsystem('d2', SellarDis2withDerivatives(), promotes=['z', 'y1', 'y2'])
-
-        model.add_subsystem('obj_cmp', ExecComp('obj = x**2 + z[1] + y1 + exp(-y2)',
-                                                z=np.array([0.0, 0.0]), x=0.0),
-                            promotes=['obj', 'x', 'z', 'y1', 'y2'])
-
-        model.add_subsystem('con_cmp1', ExecComp('con1 = 3.16 - y1'), promotes=['con1', 'y1'])
-        model.add_subsystem('con_cmp2', ExecComp('con2 = y2 - 24.0'), promotes=['con2', 'y2'])
-
-        model.nonlinear_solver = NewtonSolver()
-        model.linear_solver = ScipyKrylov()
-
-        d1 = prob.model.d1
-
-        d1.jacobian = DenseJacobian()
-        prob.set_solver_print(level=0)
-
-        prob.setup(check=False)
-        prob.run_model()
-
-        assert_rel_error(self, prob['y1'], 25.58830273, .00001)
-        assert_rel_error(self, prob['y2'], 12.05848819, .00001)
 
     def test_group_assembled_jac_with_ext_mat(self):
 
@@ -447,10 +420,8 @@ class TestJacobian(unittest.TestCase):
         model.linear_solver = LinearBlockGS()
         sup.linear_solver = LinearBlockGS()
 
-        sub1.jacobian = CSCJacobian()
-        sub1.linear_solver = DirectSolver()
-        sub2.jacobian = CSCJacobian()
-        sub2.linear_solver = DirectSolver()
+        sub1.linear_solver = DirectSolver(assemble_jac=True)
+        sub2.linear_solver = DirectSolver(assemble_jac=True)
         prob.set_solver_print(level=0)
 
         prob.setup(check=False, mode='rev')
@@ -465,14 +436,14 @@ class TestJacobian(unittest.TestCase):
     def test_assembled_jac_bad_key(self):
         # this test fails if AssembledJacobian._update sets in_start with 'output' instead of 'input'
         prob = Problem()
-        prob.model = Group()
+        prob.model = Group(assembled_jac_type='dense')
         prob.model.add_subsystem('indep', IndepVarComp('x', 1.0))
-        prob.model.add_subsystem('C1', ExecComp('c=a*2.0+b'))
-        c2 = prob.model.add_subsystem('C2', ExecComp('d=a*2.0+b+c'))
-        c3 = prob.model.add_subsystem('C3', ExecComp('ee=a*2.0'))
+        prob.model.add_subsystem('C1', ExecComp('c=a*2.0+b', a=0., b=0., c=0.))
+        c2 = prob.model.add_subsystem('C2', ExecComp('d=a*2.0+b+c', a=0., b=0., c=0., d=0.))
+        c3 = prob.model.add_subsystem('C3', ExecComp('ee=a*2.0', a=0., ee=0.))
 
         prob.model.nonlinear_solver = NewtonSolver()
-        c3.jacobian = DenseJacobian()
+        prob.model.linear_solver = DirectSolver(assemble_jac=True)
 
         prob.model.connect('indep.x', 'C1.a')
         prob.model.connect('indep.x', 'C2.a')
@@ -483,69 +454,8 @@ class TestJacobian(unittest.TestCase):
         prob.run_model()
         assert_rel_error(self, prob['C3.ee'], 8.0, 0000.1)
 
-    def test_jacobian_changed_group(self):
-        prob = Problem()
-        model = prob.model = Group()
-
-        model.add_subsystem('px', IndepVarComp('x', 1.0), promotes=['x'])
-        model.add_subsystem('pz', IndepVarComp('z', np.array([5.0, 2.0])), promotes=['z'])
-
-        model.add_subsystem('d1', SellarDis1withDerivatives(), promotes=['x', 'z', 'y1', 'y2'])
-        model.add_subsystem('d2', SellarDis2withDerivatives(), promotes=['z', 'y1', 'y2'])
-
-        model.add_subsystem('obj_cmp', ExecComp('obj = x**2 + z[1] + y1 + exp(-y2)',
-                                                z=np.array([0.0, 0.0]), x=0.0),
-                            promotes=['obj', 'x', 'z', 'y1', 'y2'])
-
-        model.add_subsystem('con_cmp1', ExecComp('con1 = 3.16 - y1'), promotes=['con1', 'y1'])
-        model.add_subsystem('con_cmp2', ExecComp('con2 = y2 - 24.0'), promotes=['con2', 'y2'])
-
-        model.nonlinear_solver = NewtonSolver()
-        model.linear_solver = ScipyKrylov()
-
-        prob.model.jacobian = DenseJacobian()
-
-        prob.setup(check=False)
-        prob.final_setup()
-
-        prob.model.jacobian = DenseJacobian()
-
-        msg = ": jacobian has changed and setup was not called."
-        with assertRaisesRegex(self, Exception, msg):
-            prob.run_model()
-
-    def test_jacobian_changed_component(self):
-        prob = Problem()
-        model = prob.model = Group()
-
-        model.add_subsystem('px', IndepVarComp('x', 1.0), promotes=['x'])
-        model.add_subsystem('pz', IndepVarComp('z', np.array([5.0, 2.0])), promotes=['z'])
-
-        model.add_subsystem('d1', SellarDis1withDerivatives(), promotes=['x', 'z', 'y1', 'y2'])
-        model.add_subsystem('d2', SellarDis2withDerivatives(), promotes=['z', 'y1', 'y2'])
-
-        model.add_subsystem('obj_cmp', ExecComp('obj = x**2 + z[1] + y1 + exp(-y2)',
-                                                z=np.array([0.0, 0.0]), x=0.0),
-                            promotes=['obj', 'x', 'z', 'y1', 'y2'])
-
-        model.add_subsystem('con_cmp1', ExecComp('con1 = 3.16 - y1'), promotes=['con1', 'y1'])
-        model.add_subsystem('con_cmp2', ExecComp('con2 = y2 - 24.0'), promotes=['con2', 'y2'])
-
-        model.nonlinear_solver = NewtonSolver()
-        model.linear_solver = ScipyKrylov()
-
-        prob.setup(check=False)
-        prob.final_setup()
-
-        d1 = prob.model.d1
-        d1.jacobian = DenseJacobian()
-
-        msg = "d1: jacobian has changed and setup was not called."
-        with assertRaisesRegex(self, Exception, msg):
-            prob.run_model()
-
     def test_assembled_jacobian_submat_indexing_dense(self):
-        prob = Problem()
+        prob = Problem(model=Group(assembled_jac_type='dense'))
         indeps = prob.model.add_subsystem('indeps', IndepVarComp())
         indeps.add_output('x', 1.0)
         indeps.add_output('y', 5.0)
@@ -556,8 +466,7 @@ class TestJacobian(unittest.TestCase):
         G1.add_subsystem('C2', ExecComp('y=3.0*x*x'))
 
         prob.model.nonlinear_solver = NewtonSolver()
-        G1.jacobian = DenseJacobian()
-        G1.linear_solver = DirectSolver()
+        G1.linear_solver = DirectSolver(assemble_jac=True)
 
         # before the fix, we got bad offsets into the _ext_mtx matrix.
         # to get entries in _ext_mtx, there must be at least one connection
@@ -574,7 +483,7 @@ class TestJacobian(unittest.TestCase):
         assert_rel_error(self, prob['G1.C2.y'], 243.0)
 
     def test_assembled_jacobian_submat_indexing_csc(self):
-        prob = Problem()
+        prob = Problem(model=Group(assembled_jac_type='dense'))
         indeps = prob.model.add_subsystem('indeps', IndepVarComp())
         indeps.add_output('x', 1.0)
         indeps.add_output('y', 5.0)
@@ -584,12 +493,10 @@ class TestJacobian(unittest.TestCase):
         G1.add_subsystem('C1', ExecComp('y=2.0*x*x'))
         G1.add_subsystem('C2', ExecComp('y=3.0*x*x'))
 
-        #prob.model.nonlinear_solver = NewtonSolver()
-        prob.model.jacobian = DenseJacobian()
-        prob.model.linear_solver = DirectSolver()
+        # prob.model.nonlinear_solver = NewtonSolver()
+        prob.model.linear_solver = DirectSolver(assemble_jac=True)
 
-        G1.jacobian = CSCJacobian()
-        G1.linear_solver = DirectSolver()
+        G1.linear_solver = DirectSolver(assemble_jac=True)
         G1.nonlinear_solver = NewtonSolver()
 
         # before the fix, we got bad offsets into the _ext_mtx matrix.
@@ -607,7 +514,7 @@ class TestJacobian(unittest.TestCase):
         assert_rel_error(self, prob['G1.C2.y'], 243.0)
 
     def test_declare_partial_reference(self):
-        # Test for a bug where declare partial is given an array reference
+        # Test for a bug where declare_partials is given an array reference
         # that compute also uses and could get corrupted
 
         class Comp(ExplicitComponent):
@@ -632,6 +539,49 @@ class TestJacobian(unittest.TestCase):
 
         assert_rel_error(self, prob['y'], 2 * np.ones(2))
 
+    def test_declare_partials_row_col_size_mismatch(self):
+        # Make sure we have clear error messages.
+
+        class Comp1(ExplicitComponent):
+            def setup(self):
+                self.add_input('x', val=np.array((2, 2)))
+                self.add_output('y', val=np.array((2, 2)))
+
+                self.declare_partials('y', 'x', rows=np.array([0, 1]), cols=np.array([0]))
+
+            def compute(self, inputs, outputs):
+                pass
+
+        class Comp2(ExplicitComponent):
+            def setup(self):
+                self.add_input('x', val=np.array((2, 2)))
+                self.add_output('y', val=np.array((2, 2)))
+
+                self.declare_partials('y', 'x', rows=np.array([0]), cols=np.array([0, 1]))
+
+            def compute(self, inputs, outputs):
+                pass
+
+        prob = Problem()
+        model = prob.model
+        model.add_subsystem('comp', Comp1())
+
+        msg = "comp: declare_partials has been called with rows and cols, which" + \
+              " should be arrays of equal length, but rows is length 2 while " + \
+              "cols is length 1."
+        with assertRaisesRegex(self, RuntimeError, msg):
+            prob.setup()
+
+        prob = Problem()
+        model = prob.model
+        model.add_subsystem('comp', Comp2())
+
+        msg = "comp: declare_partials has been called with rows and cols, which" + \
+            " should be arrays of equal length, but rows is length 1 while " + \
+            "cols is length 2."
+        with assertRaisesRegex(self, RuntimeError, msg):
+            prob.setup()
+
     def test_assembled_jacobian_unsupported_cases(self):
 
         class ParaboloidApply(ImplicitComponent):
@@ -653,7 +603,8 @@ class TestJacobian(unittest.TestCase):
         # One level deep
 
         prob = Problem()
-        model = prob.model = Group()
+        model = prob.model = Group(assembled_jac_type='dense')
+        model.linear_solver = DirectSolver(assemble_jac=True)
 
         model.add_subsystem('p1', IndepVarComp('x', val=1.0))
         model.add_subsystem('p2', IndepVarComp('y', val=1.0))
@@ -662,18 +613,17 @@ class TestJacobian(unittest.TestCase):
         model.connect('p1.x', 'comp.x')
         model.connect('p2.y', 'comp.y')
 
-        model.jacobian = DenseJacobian()
-
         prob.setup()
 
-        msg = "AssembledJacobian not supported if any subcomponent is matrix-free."
+        msg = "AssembledJacobian not supported for matrix-free subcomponent."
         with assertRaisesRegex(self, Exception, msg):
             prob.run_model()
 
         # Nested
 
         prob = Problem()
-        model = prob.model = Group()
+        model = prob.model = Group(assembled_jac_type='dense')
+        model.linear_solver = DirectSolver(assemble_jac=True)
 
         sub = model.add_subsystem('sub', Group())
 
@@ -684,11 +634,9 @@ class TestJacobian(unittest.TestCase):
         model.connect('p1.x', 'sub.comp.x')
         model.connect('p2.y', 'sub.comp.y')
 
-        model.jacobian = DenseJacobian()
-
         prob.setup()
 
-        msg = "AssembledJacobian not supported if any subcomponent is matrix-free."
+        msg = "AssembledJacobian not supported for matrix-free subcomponent."
         with assertRaisesRegex(self, Exception, msg):
             prob.run_model()
 
@@ -699,7 +647,8 @@ class TestJacobian(unittest.TestCase):
                 pass
 
         prob = Problem()
-        model = prob.model = Group()
+        model = prob.model = Group(assembled_jac_type='dense')
+        model.linear_solver = DirectSolver(assemble_jac=True)
 
         model.add_subsystem('p1', IndepVarComp('x', val=1.0))
         model.add_subsystem('p2', IndepVarComp('y', val=1.0))
@@ -708,18 +657,17 @@ class TestJacobian(unittest.TestCase):
         model.connect('p1.x', 'comp.x')
         model.connect('p2.y', 'comp.y')
 
-        model.jacobian = DenseJacobian()
-
         prob.setup()
 
-        msg = "AssembledJacobian not supported if any subcomponent is matrix-free."
+        msg = "AssembledJacobian not supported for matrix-free subcomponent."
         with assertRaisesRegex(self, Exception, msg):
             prob.run_model()
 
         # Make sure regular comps don't give an error.
 
         prob = Problem()
-        model = prob.model = Group()
+        model = prob.model = Group(assembled_jac_type='dense')
+        model.linear_solver = DirectSolver(assemble_jac=True)
 
         model.add_subsystem('p1', IndepVarComp('x', val=1.0))
         model.add_subsystem('p2', IndepVarComp('y', val=1.0))
@@ -727,8 +675,6 @@ class TestJacobian(unittest.TestCase):
 
         model.connect('p1.x', 'comp.x')
         model.connect('p2.y', 'comp.y')
-
-        model.jacobian = DenseJacobian()
 
         prob.setup()
         prob.final_setup()
@@ -745,7 +691,8 @@ class TestJacobian(unittest.TestCase):
         # One level deep
 
         prob = Problem()
-        model = prob.model = Group()
+        model = prob.model = Group(assembled_jac_type='dense')
+        model.linear_solver = DirectSolver(assemble_jac=True)
 
         model.add_subsystem('p1', IndepVarComp('x', val=1.0))
         model.add_subsystem('p2', IndepVarComp('y', val=1.0))
@@ -754,11 +701,9 @@ class TestJacobian(unittest.TestCase):
         model.connect('p1.x', 'comp.x')
         model.connect('p2.y', 'comp.y')
 
-        model.jacobian = DenseJacobian()
-
         prob.setup()
 
-        msg = "AssembledJacobian not supported if any subcomponent is matrix-free."
+        msg = "AssembledJacobian not supported for matrix-free subcomponent."
         with assertRaisesRegex(self, Exception, msg):
             prob.run_model()
 
@@ -794,15 +739,14 @@ class TestJacobian(unittest.TestCase):
 
     def test_one_src_2_tgts_with_src_indices_densejac(self):
         size = 4
-        prob = Problem()
+        prob = Problem(model=Group(assembled_jac_type='dense'))
         indeps = prob.model.add_subsystem('indeps', IndepVarComp('x', np.ones(size)))
 
         G1 = prob.model.add_subsystem('G1', Group())
         G1.add_subsystem('C1', ExecComp('z=2.0*y+3.0*x', x=np.zeros(size//2), y=np.zeros(size//2),
                                         z=np.zeros(size//2)))
 
-        prob.model.jacobian = DenseJacobian()
-        prob.model.linear_solver = DirectSolver()
+        prob.model.linear_solver = DirectSolver(assemble_jac=True)
 
         prob.model.add_objective('G1.C1.z')
         prob.model.add_design_var('indeps.x')
@@ -817,34 +761,6 @@ class TestJacobian(unittest.TestCase):
         assert_rel_error(self, J['G1.C1.z', 'indeps.x'], np.array([[ 3.,  0.,  2.,  0.],
                                                                    [-0.,  3.,  0.,  2.]]), .0001)
 
-    def test_one_src_2_tgts_with_src_indices_cscjac_error(self):
-        size = 4
-        prob = Problem()
-        indeps = prob.model.add_subsystem('indeps', IndepVarComp('x', np.ones(size)))
-
-        G1 = prob.model.add_subsystem('G1', Group())
-        G1.add_subsystem('C1', ExecComp('z=2.0*y+3.0*x', x=np.zeros(size//2), y=np.zeros(size//2),
-                                        z=np.zeros(size//2)))
-
-        prob.model.jacobian = CSCJacobian()
-        prob.model.linear_solver = DirectSolver()
-
-        prob.model.add_objective('G1.C1.z')
-        prob.model.add_design_var('indeps.x')
-
-        prob.model.connect('indeps.x', 'G1.C1.x', src_indices=[0,1])
-        prob.model.connect('indeps.x', 'G1.C1.y', src_indices=[2,3])
-
-        prob.setup()
-
-        with self.assertRaises(Exception) as context:
-            prob.final_setup()
-        self.assertEqual(str(context.exception),
-                         "Keys [('G1.C1.z', 'G1.C1.x'), ('G1.C1.z', 'G1.C1.y')] map to the same "
-                         "sub-jacobian of a CSC or CSR partial jacobian and at least one of them "
-                         "is either not dense or uses src_indices.  This can occur when multiple "
-                         "inputs on the same component are connected to the same output.")
-
     def test_one_src_2_tgts_csc_error(self):
         size = 10
         prob = Problem()
@@ -854,8 +770,7 @@ class TestJacobian(unittest.TestCase):
         G1.add_subsystem('C1', ExecComp('z=2.0*y+3.0*x', x=np.zeros(size), y=np.zeros(size),
                                         z=np.zeros(size)))
 
-        prob.model.jacobian = CSCJacobian()
-        prob.model.linear_solver = DirectSolver()
+        prob.model.linear_solver = DirectSolver(assemble_jac=True)
 
         prob.model.add_objective('G1.C1.z')
         prob.model.add_design_var('indeps.x')
@@ -869,6 +784,123 @@ class TestJacobian(unittest.TestCase):
         J = prob.compute_totals(of=['G1.C1.z'], wrt=['indeps.x'])
         assert_rel_error(self, J['G1.C1.z', 'indeps.x'], np.eye(10)*5.0, .0001)
 
+
+class MySparseComp(ExplicitComponent):
+    def setup(self):
+        self.add_input('y', np.zeros(2))
+        self.add_input('x', np.zeros(2))
+        self.add_output('z', np.zeros(2))
+
+        # partials use sparse list format
+        self.declare_partials('z', 'x', rows=[0, 1], cols=[0, 1])
+        self.declare_partials('z', 'y', rows=[0, 1], cols=[1, 0])
+
+    def compute(self, inputs, outputs):
+        outputs['z'] = np.array([3.0*inputs['x'][0]**3 + 4.0*inputs['y'][1]**2,
+                                 5.0*inputs['x'][1]**2 * inputs['y'][0]])
+
+    def compute_partials(self, inputs, partials):
+        partials['z', 'x'] = np.array([9.0*inputs['x'][0]**2, 10.0*inputs['x'][1]*inputs['y'][0]])
+        partials['z', 'y'] = np.array([8.0*inputs['y'][1], 5.0*inputs['x'][1]**2])
+
+
+class MyDenseComp(ExplicitComponent):
+    def setup(self):
+        self.add_input('y', np.zeros(2))
+        self.add_input('x', np.zeros(2))
+        self.add_output('z', np.zeros(2))
+
+        # partials are dense
+        self.declare_partials('z', 'x')
+        self.declare_partials('z', 'y')
+
+    def compute(self, inputs, outputs):
+        outputs['z'] = np.array([3.0*inputs['x'][0]**3 + 4.0*inputs['y'][1]**2,
+                                 5.0*inputs['x'][1]**2 * inputs['y'][0]])
+
+    def compute_partials(self, inputs, partials):
+        partials['z', 'x'] = np.array([[9.0*inputs['x'][0]**2, 0.0], [0.0, 10.0*inputs['x'][1]*inputs['y'][0]]])
+        partials['z', 'y'] = np.array([[0.0, 8.0*inputs['y'][1]], [5.0*inputs['x'][1]**2, 0.0]])
+
+
+class OverlappingPartialsTestCase(unittest.TestCase):
+    def test_repeated_src_indices_csc(self):
+        size = 2
+        p = Problem()
+        indeps = p.model.add_subsystem('indeps', IndepVarComp('x', np.ones(size)))
+
+        p.model.add_subsystem('C1', ExecComp('z=3.0*x[0]**3 + 2.0*x[1]**2', x=np.zeros(size)))
+
+        p.model.options['assembled_jac_type'] = 'csc'
+        p.model.linear_solver = DirectSolver(assemble_jac=True)
+
+        p.model.connect('indeps.x', 'C1.x', src_indices=[1,1])
+        p.setup()
+        p.run_model()
+
+        J = p.compute_totals(of=['C1.z'], wrt=['indeps.x'], return_format='array')
+        np.testing.assert_almost_equal(p.model._assembled_jac._int_mtx._matrix.toarray(),
+                                       np.array([[-1.,  0.,  0.],
+                                                 [ 0., -1.,  0.],
+                                                 [ 0., 13., -1.]]))
+
+    def test_repeated_src_indices_dense(self):
+        size = 2
+        p = Problem()
+        indeps = p.model.add_subsystem('indeps', IndepVarComp('x', np.ones(size)))
+
+        p.model.add_subsystem('C1', ExecComp('z=3.0*x[0]**3 + 2.0*x[1]**2', x=np.zeros(size)))
+
+        p.model.options['assembled_jac_type'] = 'dense'
+        p.model.linear_solver = DirectSolver(assemble_jac=True)
+
+        p.model.connect('indeps.x', 'C1.x', src_indices=[1,1])
+        p.setup()
+        p.run_model()
+
+        J = p.compute_totals(of=['C1.z'], wrt=['indeps.x'], return_format='array')
+        np.testing.assert_almost_equal(p.model._assembled_jac._int_mtx._matrix,
+                                       np.array([[-1.,  0.,  0.],
+                                                 [ 0., -1.,  0.],
+                                                 [ 0., 13., -1.]]))
+
+    def test_multi_inputs_same_src_dense_comp(self):
+        p = Problem()
+        indeps = p.model.add_subsystem('indeps', IndepVarComp('x', np.ones(2)))
+
+        p.model.add_subsystem('C1', MyDenseComp())
+        p.model.options['assembled_jac_type'] = 'csc'
+        p.model.linear_solver = DirectSolver(assemble_jac=True)
+
+        p.model.connect('indeps.x', ('C1.x', 'C1.y'))
+        p.setup()
+        p.run_model()
+
+        J = p.compute_totals(of=['C1.z'], wrt=['indeps.x'], return_format='array')
+        np.testing.assert_almost_equal(p.model._assembled_jac._int_mtx._matrix.toarray(),
+                                       np.array([[-1.,  0.,  0.,  0.],
+                                                 [ 0., -1.,  0.,  0.],
+                                                 [ 9.,  8., -1.,  0.],
+                                                 [ 5.,  10.,  0., -1.]]))
+
+    def test_multi_inputs_same_src_sparse_comp(self):
+        p = Problem()
+        indeps = p.model.add_subsystem('indeps', IndepVarComp('x', np.ones(2)))
+
+        p.model.add_subsystem('C1', MySparseComp())
+        p.model.options['assembled_jac_type'] = 'csc'
+        p.model.linear_solver = DirectSolver(assemble_jac=True)
+
+        p.model.connect('indeps.x', ('C1.x', 'C1.y'))
+        p.setup()
+        p.run_model()
+
+        J = p.compute_totals(of=['C1.z'], wrt=['indeps.x'], return_format='array')
+        np.testing.assert_almost_equal(p.model._assembled_jac._int_mtx._matrix.toarray(),
+                                       np.array([[-1.,  0.,  0.,  0.],
+                                                 [ 0., -1.,  0.,  0.],
+                                                 [ 9.,  8., -1.,  0.],
+                                                 [ 5.,  10.,  0., -1.]]))
 
 if __name__ == '__main__':
     unittest.main()
