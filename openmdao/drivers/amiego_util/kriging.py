@@ -303,7 +303,8 @@ class AMIEGOKrigingSurrogate(object):
             distances[i + 1:, :, i] = distances[i, :, i + 1:].T
 
         R = np.exp(-thetas.dot(np.square(distances)))
-        R[np.diag_indices_from(R)] = 1. + self.nugget
+        diag = np.arange(self.n_samples)
+        R[diag, diag] = 1. + self.nugget
 
         [U, S, Vh] = linalg.svd(R)
 

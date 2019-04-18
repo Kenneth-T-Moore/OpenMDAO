@@ -1342,18 +1342,13 @@ def calc_conEI_norm(xval, obj_surrogate, SSqr=None, y_hat=None):
         mu = obj_surrogate.mu
         p = obj_surrogate.p
 
-        n = np.shape(X)[0]
-        one = np.ones((n, ))
-
         r = np.exp(-np.einsum("ij->i", thetas.T * (xval - X)**p))
 
         y_hat = mu + np.dot(r, c_r)
         term0 = np.dot(R_inv, r)
 
-        # Note: This "dot product with one" stuff seems to be faster than np.sum for these small
-        # sized matrices.
         SSqr = SigmaSqr * (1.0 - r.dot(term0) +
-                           ((1.0 - one.dot(term0))**2) / (one.dot(np.dot(R_inv, one))))
+                           (1.0 - np.einsum('i->', term0))**2 / np.einsum('ij->', R_inv))
 
     if SSqr <= 1.0e-30:
         if abs(SSqr) <= 1.0e-30:
