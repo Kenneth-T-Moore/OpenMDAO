@@ -6,7 +6,7 @@ import numpy as np
 
 from openmdao.api import IndepVarComp, Group, Problem, ExecComp, pyOptSparseDriver
 from openmdao.drivers.amiego_driver import AMIEGO_driver
-from openmdao.test_suite.components.branin import Branin
+from openmdao.test_suite.components.branin import Branin, BraninDiscrete
 from openmdao.test_suite.components.three_bar_truss import ThreeBarTruss, ThreeBarTrussVector
 from openmdao.utils.assert_utils import assert_rel_error
 from openmdao.utils.general_utils import set_pyoptsparse_opt
@@ -32,17 +32,20 @@ class TestAMIEGOdriver(unittest.TestCase):
         prob = Problem()
         model = prob.model = Group()
 
-        model.add_subsystem('p1', IndepVarComp('xC', 7.5))
-        model.add_subsystem('p2', IndepVarComp('xI', 0.0))
-        model.add_subsystem('comp', Branin())
+        indep = IndepVarComp()
+        indep.add_output('xC', val=7.5)
+        indep.add_discrete_output('xI', val=0)
 
-        model.connect('p2.xI', 'comp.x0')
-        model.connect('p1.xC', 'comp.x1')
+        model.add_subsystem('p', indep)
+        model.add_subsystem('comp', BraninDiscrete())
+
+        model.connect('p.xI', 'comp.x0')
+        model.connect('p.xC', 'comp.x1')
 
         #model.approx_totals(method='fd')
 
-        model.add_design_var('p2.xI', lower=-5.0, upper=10.0)
-        model.add_design_var('p1.xC', lower=0.0, upper=15.0)
+        model.add_design_var('p.xI', lower=-5, upper=10)
+        model.add_design_var('p.xC', lower=0.0, upper=15.0)
         model.add_objective('comp.f')
 
         prob.driver = AMIEGO_driver()
@@ -53,14 +56,14 @@ class TestAMIEGOdriver(unittest.TestCase):
         prob.driver.minlp.options['trace_iter'] = 3
         prob.driver.minlp.options['trace_iter_max'] = 5
 
-        prob.driver.sampling = {'p2.xI' : np.array([[-5.0], [0.0], [5.0]])}
+        prob.driver.sampling = {'p.xI' : np.array([[-5.0], [0.0], [5.0]])}
 
         prob.setup(check=False)
         prob.run_driver()
 
         # Optimal solution
         assert_rel_error(self, prob['comp.f'], 0.49398, 1e-5)
-        self.assertTrue(int(prob['p2.xI']) in [3, -3])
+        self.assertTrue(int(prob['p.xI']) in [3, -3])
 
     def test_three_bar_truss(self):
         prob = Problem()
