@@ -197,7 +197,13 @@ class AMIEGO_driver(Driver):
 
         for name, val in iteritems(self.get_design_var_values()):
             if name in i_dvs:
-                i_size = len(val)
+                if name in self._designvars_discrete:
+                    if np.isscalar(val):
+                        i_size = 1
+                    else:
+                        i_size = len(val)
+                else:
+                    i_size = len(val)
                 self.i_idx[name] = i_size
             else:
                 self.c_dvs.append(name)
@@ -435,7 +441,13 @@ class AMIEGO_driver(Driver):
 
                     for name in self.i_idx:
                         val = desvars[name]
-                        best_int_design[name] = val.copy()
+                        if name in self._designvars_discrete:
+                            if np.isscalar(val):
+                                best_int_design[name] = val
+                            else:
+                                best_int_design[name] = val.copy()
+                        else:
+                            best_int_design[name] = val.copy()
 
                     for name in self.c_dvs:
                         best_cont_design[name] = desvars[name].copy()

@@ -143,7 +143,13 @@ class Branch_and_Bound(Driver):
         j = 0
         for name, val in iteritems(self.get_design_var_values()):
             self.dvs.append(name)
-            size = len(val)
+            if name in self._designvars_discrete:
+                if np.isscalar(val):
+                    size = 1
+                else:
+                    size = len(val)
+            else:
+                size = len(val)
             self.idx_cache[name] = (j, j + size)
             j += size
 
