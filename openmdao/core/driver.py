@@ -64,12 +64,23 @@ class Driver(object):
         Provides a consistent way for drivers to declare what features they support.
     _designvars : dict
         Contains all design variable info.
+    _designvars_discrete : list
+        List of design variables that are discrete.
     _cons : dict
         Contains all constraint info.
     _objs : dict
         Contains all objective info.
     _responses : dict
         Contains all response info.
+    _remote_dvs : dict
+        Dict of design variables that are remote on at least one proc. Values are
+        (owning rank, size).
+    _remote_cons : dict
+        Dict of constraints that are remote on at least one proc. Values are
+        (owning rank, size).
+    _remote_objs : dict
+        Dict of objectives that are remote on at least one proc. Values are
+        (owning rank, size).
     _rec_mgr : <RecordingManager>
         Object that manages all recorders added to this driver.
     _vars_to_record: dict
@@ -106,6 +117,7 @@ class Driver(object):
 
         self._problem = None
         self._designvars = None
+        self._designvars_discrete = []
         self._cons = None
         self._objs = None
         self._responses = None
@@ -152,7 +164,7 @@ class Driver(object):
         self.supports.declare('linear_constraints', types=bool, default=False)
         self.supports.declare('two_sided_constraints', types=bool, default=False)
         self.supports.declare('multiple_objectives', types=bool, default=False)
-        self.supports.declare('integer_design_vars', types=bool, default=False)
+        self.supports.declare('integer_design_vars', types=bool, default=True)
         self.supports.declare('gradients', types=bool, default=False)
         self.supports.declare('active_set', types=bool, default=False)
         self.supports.declare('mixed_integer', types=bool, default=False)
@@ -236,6 +248,14 @@ class Driver(object):
             np.any([r['scaler'] is not None for r in itervalues(self._responses)]) or
             np.any([dv['scaler'] is not None for dv in itervalues(self._designvars)])
         )
+
+        # Determine if any design variables are discrete.
+        self._designvars_discrete = [dv for dv in self._designvars
+                                     if dv in model._discrete_outputs]
+        if not self.supports['integer_design_vars'] and len(self._designvars_discrete) > 0:
+            msg = "Discrete design variables are not supported by this driver: "
+            msg += '.'.join(self._designvars_discrete)
+            raise RuntimeError(msg)
 
         con_set = set()
         obj_set = set()
@@ -378,29 +398,28 @@ class Driver(object):
 
             filtered_vars_to_record['in'] = list(myinputs)
 
-        # system outputs (if the options being processed are for the driver itself)
-        if recording_options is self.recording_options:
-            myoutputs = set()
+        # system outputs
+        myoutputs = set()
 
-            if incl:
-                myoutputs = {n for n in model._outputs
-                             if n in abs2prom and check_path(abs2prom[n], incl, excl)}
+        if incl:
+            myoutputs = {n for n in model._outputs
+                         if n in abs2prom and check_path(abs2prom[n], incl, excl)}
 
-                if MPI:
-                    # gather the variables from all ranks to rank 0
-                    all_vars = model.comm.gather(myoutputs, root=0)
-                    if MPI.COMM_WORLD.rank == 0:
-                        myoutputs = all_vars[-1]
-                        for d in all_vars[:-1]:
-                            myoutputs.update(d)
+            if MPI:
+                # gather the variables from all ranks to rank 0
+                all_vars = model.comm.gather(myoutputs, root=0)
+                if MPI.COMM_WORLD.rank == 0:
+                    myoutputs = all_vars[-1]
+                    for d in all_vars[:-1]:
+                        myoutputs.update(d)
 
-                # de-duplicate
-                myoutputs = myoutputs.difference(all_desvars, all_objectives, all_constraints)
+            # de-duplicate
+            myoutputs = myoutputs.difference(all_desvars, all_objectives, all_constraints)
 
-                if MPI:
-                    myoutputs = [n for n in myoutputs if rrank == rowned[n]]
+            if MPI:
+                myoutputs = [n for n in myoutputs if rrank == rowned[n]]
 
-            filtered_vars_to_record['sys'] = list(myoutputs)
+        filtered_vars_to_record['sys'] = list(myoutputs)
 
         return filtered_vars_to_record
 
@@ -461,7 +480,9 @@ class Driver(object):
 
             comm.Bcast(val, root=owner)
         else:
-            if indices is None or ignore_indices:
+            if name in self._designvars_discrete:
+                val = model._discrete_outputs[name]
+            elif indices is None or ignore_indices:
                 val = vec[name].copy()
             else:
                 val = vec[name][indices]
@@ -529,18 +550,22 @@ class Driver(object):
         if indices is None:
             indices = slice(None)
 
-        desvar = problem.model._outputs._views_flat[name]
-        desvar[indices] = value
+        if name in self._designvars_discrete:
+            problem.model._discrete_outputs[name] = int(value)
 
-        if self._has_scaling:
-            # Scale design variable values
-            scaler = meta['scaler']
-            if scaler is not None:
-                desvar[indices] *= 1.0 / scaler
+        else:
+            desvar = problem.model._outputs._views_flat[name]
+            desvar[indices] = value
 
-            adder = meta['adder']
-            if adder is not None:
-                desvar[indices] -= adder
+            if self._has_scaling:
+                # Scale design variable values
+                scaler = meta['scaler']
+                if scaler is not None:
+                    desvar[indices] *= 1.0 / scaler
+
+                adder = meta['adder']
+                if adder is not None:
+                    desvar[indices] -= adder
 
     def get_response_values(self, filter=None):
         """
