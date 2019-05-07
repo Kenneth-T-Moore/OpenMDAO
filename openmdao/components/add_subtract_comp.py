@@ -31,7 +31,7 @@ class AddSubtractComp(ExplicitComponent):
     Attributes
     ----------
     _add_systems : list
-    List of equation systems to be initialized with the system.
+        List of equation systems to be initialized with the system.
     """
 
     def __init__(self, output_name=None, input_names=None, vec_size=1, length=1,
@@ -93,7 +93,7 @@ class AddSubtractComp(ExplicitComponent):
         complex : Boolean
             Set True to enable complex math (e.g. for complex step verification)
         """
-        self.options.declare('complex', default=False,
+        self.options.declare('complex', types=bool, default=False,
                              desc="Allocate as complex (e.g. for complex-step verification)")
 
     def add_equation(self, output_name, input_names, vec_size=1, length=1, val=1.0,

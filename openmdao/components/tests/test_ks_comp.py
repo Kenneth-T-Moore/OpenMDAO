@@ -10,7 +10,7 @@ from openmdao.api import Problem, IndepVarComp, Group, ExecComp, ScipyOptimizeDr
 from openmdao.components.ks_comp import KSComp
 from openmdao.test_suite.components.simple_comps import DoubleArrayComp
 from openmdao.test_suite.test_examples.beam_optimization.multipoint_beam_stress import MultipointBeamGroup
-from openmdao.utils.assert_utils import assert_rel_error
+from openmdao.utils.assert_utils import assert_rel_error, assert_warning
 
 
 class TestKSFunction(unittest.TestCase):
@@ -61,6 +61,34 @@ class TestKSFunction(unittest.TestCase):
 
         for (of, wrt) in partials['ks']:
             assert_rel_error(self, partials['ks'][of, wrt]['abs error'][0], 0.0, 1e-6)
+
+    def test_partials_no_compute(self):
+        prob = Problem()
+
+        model = prob.model
+
+        model.add_subsystem('px', IndepVarComp('x', val=np.array([5.0, 4.0])))
+
+        ks_comp = model.add_subsystem('ks', KSComp(width=2))
+
+        model.connect('px.x', 'ks.g')
+
+        prob.setup(check=False)
+        prob.run_driver()
+
+        # compute partials with the current model inputs
+        inputs = { 'g': prob['ks.g'] }
+        partials = {}
+
+        ks_comp.compute_partials(inputs, partials)
+        assert_rel_error(self, partials[('KS', 'g')], np.array([1., 0.]), 1e-6)
+
+        # swap inputs and call compute partials again, without calling compute
+        inputs['g'][0][0] = 4
+        inputs['g'][0][1] = 5
+
+        ks_comp.compute_partials(inputs, partials)
+        assert_rel_error(self, partials[('KS', 'g')], np.array([0., 1.]), 1e-6)
 
     def test_beam_stress(self):
         E = 1.
@@ -138,7 +166,6 @@ class TestKSFunction(unittest.TestCase):
         # to ensure we get the warning and the correct answer.
         # self-contained, to be removed when class name goes away.
         from openmdao.components.ks_comp import KSComponent  # deprecated
-        import warnings
 
         prob = Problem()
         prob.model = model = Group()
@@ -146,12 +173,10 @@ class TestKSFunction(unittest.TestCase):
         model.add_subsystem('px', IndepVarComp(name="x", val=np.ones((2,))))
         model.add_subsystem('comp', DoubleArrayComp())
 
-        with warnings.catch_warnings(record=True) as w:
-            model.add_subsystem('ks', KSComponent(width=2))
+        msg = "'KSComponent' has been deprecated. Use 'KSComp' instead."
 
-        self.assertEqual(len(w), 1)
-        self.assertTrue(issubclass(w[0].category, DeprecationWarning))
-        self.assertEqual(str(w[0].message), "'KSComponent' has been deprecated. Use 'KSComp' instead.")
+        with assert_warning(DeprecationWarning, msg):
+            model.add_subsystem('ks', KSComponent(width=2))
 
         model.connect('px.x', 'comp.x1')
         model.connect('comp.y2', 'ks.g')
@@ -254,6 +279,7 @@ class TestKSFunctionFeatures(unittest.TestCase):
         prob.run_model()
 
         assert_rel_error(self, prob['ks.KS'][0], -12.0)
+
 
 if __name__ == "__main__":
     unittest.main()

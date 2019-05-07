@@ -1,9 +1,10 @@
-import os
-import json
-from six import iteritems
-import networkx as nx
-from collections import OrderedDict
 import base64
+import json
+import os
+from collections import OrderedDict
+
+import networkx as nx
+from six import iteritems, itervalues
 
 try:
     import h5py
@@ -11,15 +12,31 @@ except ImportError:
     # Necessary for the file to parse
     h5py = None
 
+from openmdao.components.exec_comp import ExecComp
+from openmdao.components.meta_model_structured_comp import MetaModelStructuredComp
+from openmdao.components.meta_model_unstructured_comp import MetaModelUnStructuredComp
+from openmdao.core.explicitcomponent import ExplicitComponent
+from openmdao.core.indepvarcomp import IndepVarComp
+from openmdao.core.parallel_group import ParallelGroup
 from openmdao.core.group import Group
 from openmdao.core.problem import Problem
 from openmdao.core.implicitcomponent import ImplicitComponent
-from openmdao.utils.general_utils import warn_deprecation
-from openmdao.utils.record_util import is_valid_sqlite3_db
+from openmdao.devtools.html_utils import read_files, write_script, DiagramWriter
+from openmdao.utils.class_util import overrides_method
+from openmdao.utils.general_utils import warn_deprecation, simple_warning, make_serializable
+from openmdao.utils.record_util import check_valid_sqlite3_db
 from openmdao.utils.mpi import MPI
+from openmdao.recorders.case_reader import CaseReader
+from openmdao.drivers.doe_driver import DOEDriver
+
+# Toolbar settings
+_FONT_SIZES = [8, 9, 10, 11, 12, 13, 14]
+_MODEL_HEIGHTS = [600, 650, 700, 750, 800, 850, 900, 950, 1000, 2000, 3000, 4000]
+
+_IND = 4  # HTML indentation (spaces)
 
 
-def _get_tree_dict(system, component_execution_orders, component_execution_index):
+def _get_tree_dict(system, component_execution_orders, component_execution_index, is_parallel=False):
     """Get a dictionary representation of the system hierarchy."""
     tree_dict = OrderedDict()
     tree_dict['name'] = system.name
@@ -27,6 +44,20 @@ def _get_tree_dict(system, component_execution_orders, component_execution_index
 
     if not isinstance(system, Group):
         tree_dict['subsystem_type'] = 'component'
+        tree_dict['is_parallel'] = is_parallel
+        if isinstance(system, ImplicitComponent):
+            tree_dict['component_type'] = 'implicit'
+        elif isinstance(system, ExecComp):
+            tree_dict['component_type'] = 'exec'
+        elif isinstance(system, (MetaModelStructuredComp, MetaModelUnStructuredComp)):
+            tree_dict['component_type'] = 'metamodel'
+        elif isinstance(system, IndepVarComp):
+            tree_dict['component_type'] = 'indep'
+        elif isinstance(system, ExplicitComponent):
+            tree_dict['component_type'] = 'explicit'
+        else:
+            tree_dict['component_type'] = None
+
         component_execution_orders[system.pathname] = component_execution_index[0]
         component_execution_index[0] += 1
 
@@ -48,8 +79,12 @@ def _get_tree_dict(system, component_execution_orders, component_execution_index
                 var_dict['dtype'] = type(meta['value']).__name__
                 children.append(var_dict)
     else:
+        if isinstance(system, ParallelGroup):
+            is_parallel = True
+        tree_dict['component_type'] = None
         tree_dict['subsystem_type'] = 'group'
-        children = [_get_tree_dict(s, component_execution_orders, component_execution_index)
+        tree_dict['is_parallel'] = is_parallel
+        children = [_get_tree_dict(s, component_execution_orders, component_execution_index, is_parallel)
                     for s in system._subsystems_myproc]
         if system.comm.size > 1:
             if system._subsystems_myproc:
@@ -61,6 +96,28 @@ def _get_tree_dict(system, component_execution_orders, component_execution_index
             children = []
             for children_list in children_lists:
                 children.extend(children_list)
+
+    if isinstance(system, ImplicitComponent):
+        if overrides_method('solve_linear', system, ImplicitComponent):
+            tree_dict['linear_solver'] = "solve_linear"
+        else:
+            tree_dict['linear_solver'] = ""
+    else:
+        if system.linear_solver:
+            tree_dict['linear_solver'] = system.linear_solver.SOLVER
+        else:
+            tree_dict['linear_solver'] = ""
+
+    if isinstance(system, ImplicitComponent):
+        if overrides_method('solve_nonlinear', system, ImplicitComponent):
+            tree_dict['nonlinear_solver'] = "solve_nonlinear"
+        else:
+            tree_dict['nonlinear_solver'] = ""
+    else:
+        if system.nonlinear_solver:
+            tree_dict['nonlinear_solver'] = system.nonlinear_solver.SOLVER
+        else:
+            tree_dict['nonlinear_solver'] = ""
 
     tree_dict['children'] = children
 
@@ -87,91 +144,109 @@ def _get_viewer_data(data_source):
     """
     if isinstance(data_source, Problem):
         root_group = data_source.model
+
+        if not isinstance(root_group, Group):
+            simple_warning("The model is not a Group, viewer data is unavailable.")
+            return {}
+
+        driver = data_source.driver
+        driver_name = driver.__class__.__name__
+        driver_type = 'doe' if isinstance(driver, DOEDriver) else 'optimization'
+        driver_options = {k: driver.options[k] for k in driver.options}
+        driver_opt_settings = None
+        if driver_type is 'optimization' and 'opt_settings' in dir(driver):
+            driver_opt_settings = driver.opt_settings   
+
     elif isinstance(data_source, Group):
         if not data_source.pathname:  # root group
             root_group = data_source
+            driver_name = None
+            driver_type = None
+            driver_options = None
+            driver_opt_settings = None
         else:
             # this function only makes sense when it is at the root
             return {}
-    elif is_valid_sqlite3_db(data_source):
-        import sqlite3
-        con = sqlite3.connect(data_source,
-                              detect_types=sqlite3.PARSE_DECLTYPES)
-        cur = con.cursor()
-        cur.execute("SELECT format_version FROM metadata")
-        row = cur.fetchone()
-        format_version = row[0]
 
-        cur.execute("SELECT model_viewer_data FROM driver_metadata;")
-        model_text = cur.fetchone()
+    elif isinstance(data_source, str):
+        return CaseReader(data_source, pre_load=False).problem_metadata
 
-        from six import PY2, PY3
-        if row is not None:
-            if format_version >= 3:
-                return json.loads(model_text[0])
-            elif format_version in (1, 2):
-                if PY2:
-                    import cPickle
-                    return cPickle.loads(str(model_text[0]))
-                if PY3:
-                    import pickle
-                    return pickle.loads(model_text[0])
     else:
-        raise TypeError('get_model_viewer_data only accepts Problems, Groups or filenames')
+        raise TypeError('_get_viewer_data only accepts Problems, Groups or filenames')
 
     data_dict = {}
-    component_execution_idx = [0]  # list so pass by ref
-    component_execution_orders = {}
-    data_dict['tree'] = _get_tree_dict(root_group, component_execution_orders,
-                                       component_execution_idx)
+    comp_exec_idx = [0]  # list so pass by ref
+    comp_exec_orders = {}
+    data_dict['tree'] = _get_tree_dict(root_group, comp_exec_orders, comp_exec_idx)
 
     connections_list = []
+
+    sys_pathnames_list = []  # list of pathnames of systems found in cycles
+    sys_pathnames_dict = {}  # map of pathnames to index of pathname in list
 
     # sort to make deterministic for testing
     sorted_abs_input2src = OrderedDict(sorted(root_group._conn_global_abs_in2out.items()))
     root_group._conn_global_abs_in2out = sorted_abs_input2src
+
     G = root_group.compute_sys_graph(comps_only=True)
     scc = nx.strongly_connected_components(G)
     scc_list = [s for s in scc if len(s) > 1]
+
     for in_abs, out_abs in iteritems(sorted_abs_input2src):
         if out_abs is None:
             continue
+
         src_subsystem = out_abs.rsplit('.', 1)[0]
         tgt_subsystem = in_abs.rsplit('.', 1)[0]
+        src_to_tgt_str = src_subsystem + ' ' + tgt_subsystem
+
         count = 0
         edges_list = []
+
         for li in scc_list:
             if src_subsystem in li and tgt_subsystem in li:
-                count = count+1
-                if(count > 1):
+                count += 1
+                if count > 1:
                     raise ValueError('Count greater than 1')
 
-                exe_tgt = component_execution_orders[tgt_subsystem]
-                exe_src = component_execution_orders[src_subsystem]
+                exe_tgt = comp_exec_orders[tgt_subsystem]
+                exe_src = comp_exec_orders[src_subsystem]
                 exe_low = min(exe_tgt, exe_src)
                 exe_high = max(exe_tgt, exe_src)
-                subg = G.subgraph(li).copy()
-                for n in list(subg.nodes()):
-                    exe_order = component_execution_orders[n]
-                    if(exe_order < exe_low or exe_order > exe_high):
-                        subg.remove_node(n)
 
-                src_to_tgt_str = src_subsystem + ' ' + tgt_subsystem
-                for tup in subg.edges():
-                    edge_str = tup[0] + ' ' + tup[1]
+                subg = G.subgraph(n for n in li if exe_low <= comp_exec_orders[n] <= exe_high)
+                for edge in subg.edges():
+                    edge_str = ' '.join(edge)
                     if edge_str != src_to_tgt_str:
-                        edges_list.append(edge_str)
+                        src, tgt = edge
 
-        if(len(edges_list) > 0):
+                        # add src & tgt to pathnames list & dict if not already there
+                        for pathname in edge:
+                            if pathname not in sys_pathnames_dict:
+                                sys_pathnames_list.append(pathname)
+                                sys_pathnames_dict[pathname] = len(sys_pathnames_list) - 1
+
+                        # replace src & tgt pathnames with indices into pathname list
+                        src = sys_pathnames_dict[src]
+                        tgt = sys_pathnames_dict[tgt]
+
+                        edges_list.append([src, tgt])
+
+        if edges_list:
             edges_list.sort()  # make deterministic so same .html file will be produced each run
-            connections_list.append(OrderedDict([('src', out_abs), ('tgt', in_abs),
-                                                 ('cycle_arrows', edges_list)]))
+            connections_list.append(dict([('src', out_abs), ('tgt', in_abs),
+                                          ('cycle_arrows', edges_list)]))
         else:
-            connections_list.append(OrderedDict([('src', out_abs), ('tgt', in_abs)]))
+            connections_list.append(dict([('src', out_abs), ('tgt', in_abs)]))
 
+    data_dict['sys_pathnames_list'] = sys_pathnames_list
     data_dict['connections_list'] = connections_list
-
     data_dict['abs2prom'] = root_group._var_abs2prom
+
+    data_dict['driver'] = {'name': driver_name, 'type': driver_type, 
+                           'options': driver_options, 'opt_settings': driver_opt_settings} 
+    data_dict['design_vars'] = root_group.get_design_vars()
+    data_dict['responses'] = root_group.get_responses()
 
     return data_dict
 
@@ -185,7 +260,7 @@ def view_tree(*args, **kwargs):
 
 
 def view_model(data_source, outfile='n2.html', show_browser=True, embeddable=False,
-               draw_potential_connections=True):
+               title=None):
     """
     Generates an HTML file containing a tree viewer.
 
@@ -207,29 +282,17 @@ def view_model(data_source, outfile='n2.html', show_browser=True, embeddable=Fal
         If True, gives a single HTML file that doesn't have the <html>, <DOCTYPE>, <body>
         and <head> tags. If False, gives a single, standalone HTML file for viewing.
 
-    draw_potential_connections : bool, optional
-        If true, allows connections to be drawn on the N2 that do not currently exist
-        in the model. Defaults to True.
+    title : str, optional
+        The title for the diagram. Used in the HTML title and also shown on the page.
+
     """
     # grab the model viewer data
-    model_viewer_data = _get_viewer_data(data_source)
-    model_viewer_data = 'var modelData = %s' % json.dumps(model_viewer_data)
+    model_data = _get_viewer_data(data_source)
+    model_data = 'var modelData = %s' % json.dumps(model_data, default=make_serializable)
 
     # if MPI is active only display one copy of the viewer
     if MPI and MPI.COMM_WORLD.rank != 0:
         return
-
-    html_begin_tags = """
-                      <html>
-                      <head>
-                        <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-                      </head>
-                      <body>\n
-                      """
-    html_end_tags = """
-                    </body>
-                    </html>
-                    """
 
     code_dir = os.path.dirname(os.path.abspath(__file__))
     vis_dir = os.path.join(code_dir, "visualization")
@@ -237,68 +300,85 @@ def view_model(data_source, outfile='n2.html', show_browser=True, embeddable=Fal
     src_dir = os.path.join(vis_dir, "src")
     style_dir = os.path.join(vis_dir, "style")
 
-    # grab the libraries
-    with open(os.path.join(libs_dir, "awesomplete.js"), "r") as f:
-        awesomplete = f.read()
-    with open(os.path.join(libs_dir, "d3.v4.min.js"), "r") as f:
-        d3 = f.read()
-    with open(os.path.join(libs_dir, "vkBeautify.js"), "r") as f:
-        vk_beautify = f.read()
+    # grab the libraries, src and style
+    lib_dct = {'d3': 'd3.v4.min', 'awesomplete': 'awesomplete', 'vk_beautify': 'vkBeautify'}
+    libs = read_files(itervalues(lib_dct), libs_dir, 'js')
+    src_names = 'constants', 'draw', 'legend', 'modal', 'ptN2', 'search', 'svg'
+    srcs = read_files(src_names, src_dir, 'js')
+    styles = read_files(('awesomplete', 'partition_tree'), style_dir, 'css')
 
-    # grab the src
-    with open(os.path.join(src_dir, "constants.js"), "r") as f:
-        constants = f.read()
-    with open(os.path.join(src_dir, "draw.js"), "r") as f:
-        draw = f.read()
-    with open(os.path.join(src_dir, "legend.js"), "r") as f:
-        legend = f.read()
-    with open(os.path.join(src_dir, "modal.js"), "r") as f:
-        modal = f.read()
-    with open(os.path.join(src_dir, "ptN2.js"), "r") as f:
-        pt_n2 = f.read()
-    with open(os.path.join(src_dir, "search.js"), "r") as f:
-        search = f.read()
-    with open(os.path.join(src_dir, "svg.js"), "r") as f:
-        svg = f.read()
-
-    # grab the style
-    with open(os.path.join(style_dir, "awesomplete.css"), "r") as f:
-        awesomplete_style = f.read()
-    with open(os.path.join(style_dir, "partition_tree.css"), "r") as f:
-        partition_tree_style = f.read()
     with open(os.path.join(style_dir, "fontello.woff"), "rb") as f:
         encoded_font = str(base64.b64encode(f.read()).decode("ascii"))
 
-    # grab the index.html
-    with open(os.path.join(vis_dir, "index.html"), "r") as f:
-        index = f.read()
+    if title:
+        title = "OpenMDAO Model Hierarchy and N2 diagram: %s" % title
+    else:
+        title = "OpenMDAO Model Hierarchy and N2 diagram"
 
-    # add the necessary HTML tags if we aren't embedding
-    if not embeddable:
-        index = html_begin_tags + index + html_end_tags
+    h = DiagramWriter(filename=os.path.join(vis_dir, "index.html"),
+                      title=title,
+                      styles=styles, embeddable=embeddable)
 
     # put all style and JS into index
-    index = index.replace('{{awesomplete_style}}', awesomplete_style)
-    index = index.replace('{{partition_tree_style}}', partition_tree_style)
-    index = index.replace('{{fontello}}', encoded_font)
-    index = index.replace('{{d3_lib}}', d3)
-    index = index.replace('{{awesomplete_lib}}', awesomplete)
-    index = index.replace('{{vk_beautify_lib}}', vk_beautify)
-    index = index.replace('{{model_data}}', model_viewer_data)
-    index = index.replace('{{constants_lib}}', constants)
-    index = index.replace('{{modal_lib}}', modal)
-    index = index.replace('{{svg_lib}}', svg)
-    index = index.replace('{{search_lib}}', search)
-    index = index.replace('{{legend_lib}}', legend)
-    index = index.replace('{{draw_lib}}', draw)
-    index = index.replace('{{ptn2_lib}}', pt_n2)
-    if draw_potential_connections:
-        index = index.replace('{{draw_potential_connections}}', 'true')
-    else:
-        index = index.replace('{{draw_potential_connections}}', 'false')
+    h.insert('{{fontello}}', encoded_font)
 
-    with open(outfile, 'w') as f:
-        f.write(index)
+    for k, v in iteritems(lib_dct):
+        h.insert('{{{}_lib}}'.format(k), write_script(libs[v], indent=_IND))
+
+    for name, code in iteritems(srcs):
+        h.insert('{{{}_lib}}'.format(name.lower()), write_script(code, indent=_IND))
+
+    h.insert('{{model_data}}', write_script(model_data, indent=_IND))
+
+    # Toolbar
+    toolbar = h.toolbar
+    group1 = toolbar.add_button_group()
+    group1.add_button("Return To Root", uid="returnToRootButtonId", disabled="disabled", content="icon-home")
+    group1.add_button("Back", uid="backButtonId", disabled="disabled", content="icon-left-big")
+    group1.add_button("Forward", uid="forwardButtonId", disabled="disabled", content="icon-right-big")
+    group1.add_button("Up One Level", uid="upOneLevelButtonId", disabled="disabled", content="icon-up-big")
+
+    group2 = toolbar.add_button_group()
+    group2.add_button("Uncollapse In View Only", uid="uncollapseInViewButtonId",
+                      content="icon-resize-full")
+    group2.add_button("Uncollapse All", uid="uncollapseAllButtonId",
+                      content="icon-resize-full bigger-font")
+    group2.add_button("Collapse Outputs In View Only", uid="collapseInViewButtonId",
+                      content="icon-resize-small")
+    group2.add_button("Collapse All Outputs", uid="collapseAllButtonId",
+                      content="icon-resize-small bigger-font")
+    group2.add_dropdown("Collapse Depth", button_content="icon-sort-number-up",
+                        uid="idCollapseDepthDiv")
+
+    group3 = toolbar.add_button_group()
+    group3.add_button("Clear Arrows and Connections", uid="clearArrowsAndConnectsButtonId",
+                      content="icon-eraser")
+    group3.add_button("Show Path", uid="showCurrentPathButtonId", content="icon-terminal")
+    group3.add_button("Show Legend", uid="showLegendButtonId", content="icon-map-signs")
+    group3.add_button("Show Params", uid="showParamsButtonId", content="icon-exchange")
+    group3.add_button("Toggle Solver Names", uid="toggleSolverNamesButtonId", content="icon-minus")
+    group3.add_dropdown("Font Size", id_naming="idFontSize", options=_FONT_SIZES,
+                        option_formatter=lambda x: '{}px'.format(x),
+                        button_content="icon-text-height")
+    group3.add_dropdown("Vertically Resize", id_naming="idVerticalResize",
+                        options=_MODEL_HEIGHTS, option_formatter=lambda x: '{}px'.format(x),
+                        button_content="icon-resize-vertical", header="Model Height")
+
+    group4 = toolbar.add_button_group()
+    group4.add_button("Save SVG", uid="saveSvgButtonId", content="icon-floppy")
+
+    group5 = toolbar.add_button_group()
+    group5.add_button("Help", uid="helpButtonId", content="icon-help")
+
+    # Help
+    help_txt = ('Left clicking on a node in the partition tree will navigate to that node. '
+                'Right clicking on a node in the model hierarchy will collapse/uncollapse it. '
+                'A click on any element in the N^2 diagram will allow those arrows to persist.')
+
+    h.add_help(help_txt, footer="OpenMDAO Model Hierarchy and N^2 diagram")
+
+    # Write output file
+    h.write(outfile)
 
     # open it up in the browser
     if show_browser:

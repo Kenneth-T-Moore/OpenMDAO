@@ -2,6 +2,7 @@
 import unittest
 from docutils import nodes
 from docutils.parsers.rst import Directive
+import re
 from sphinx.errors import SphinxError
 import sphinx
 import traceback
@@ -47,6 +48,7 @@ class EmbedCodeDirective(Directive):
         'layout': unchanged,
         'scale': unchanged,
         'align': unchanged,
+        'imports-not-required': unchanged,
     }
 
     def run(self):
@@ -67,7 +69,8 @@ class EmbedCodeDirective(Directive):
             raise self.directive_error(2, str(err))
 
         is_test = class_ is not None and inspect.isclass(class_) and issubclass(class_, unittest.TestCase)
-        shows_plot = '.show(' in source
+        plotting_functions = ['\.show\(', 'partial_deriv_plot\(']
+        shows_plot = re.compile('|'.join(plotting_functions)).search(source)
 
         if 'layout' in self.options:
             layout = [s.strip() for s in self.options['layout'].split(',')]
@@ -134,6 +137,8 @@ class EmbedCodeDirective(Directive):
         # Run the source (if necessary)
         skipped = failed = False
         if do_run:
+            imports_not_required = 'imports-not-required' in self.options
+
             if shows_plot:
                 # import matplotlib AFTER __future__ (if it's there)
                 mpl_import = "\nimport matplotlib\nmatplotlib.use('Agg')\n"
@@ -146,10 +151,11 @@ class EmbedCodeDirective(Directive):
 
                 skipped, failed, run_outputs = \
                     run_code(code_to_run, path, module=module, cls=class_,
-                             shows_plot=True)
+                             shows_plot=True, imports_not_required=imports_not_required)
             else:
                 skipped, failed, run_outputs = \
-                    run_code(code_to_run, path, module=module, cls=class_)
+                    run_code(code_to_run, path, module=module, cls=class_,
+                             imports_not_required=imports_not_required)
 
         if failed:
             # Failed cases raised as a Directive warning (level 2 in docutils).

@@ -1,17 +1,19 @@
 """Test the Broyden nonlinear solver. """
 from __future__ import print_function
 
+from six import iteritems
+
 import unittest
-import warnings
 
 import numpy as np
 
 from openmdao.api import Problem, LinearRunOnce, ImplicitComponent, IndepVarComp, DirectSolver, \
-     BoundsEnforceLS, LinearBlockGS
+     BoundsEnforceLS, LinearBlockGS, Group, ExecComp
 from openmdao.solvers.nonlinear.broyden import BroydenSolver
 from openmdao.test_suite.components.implicit_newton_linesearch import ImplCompTwoStates
-from openmdao.test_suite.components.sellar import SellarStateConnection, SellarDerivatives
-from openmdao.utils.assert_utils import assert_rel_error
+from openmdao.test_suite.components.sellar import SellarStateConnection, SellarDerivatives, \
+     SellarDis1withDerivatives, SellarDis2withDerivatives
+from openmdao.utils.assert_utils import assert_rel_error, assert_warning
 
 
 class VectorEquation(ImplicitComponent):
@@ -278,14 +280,11 @@ class TestBryoden(unittest.TestCase):
 
         prob.setup(check=False)
 
-        with warnings.catch_warnings(record=True) as w:
+        msg = "The following states are not covered by a solver, and may have been " \
+              "omitted from the BroydenSolver 'state_vars': mixed.x3, mixed.x45"
+
+        with assert_warning(UserWarning, msg):
             prob.run_model()
-
-        self.assertEqual(len(w), 1)
-
-        msg = "The following states are not covered by a solver, and may have been omitted from the BroydenSolver 'state_vars': mixed.x3, mixed.x45"
-
-        self.assertEqual(str(w[0].message), msg)
 
         # Try again with promoted names.
         prob = Problem()
@@ -303,14 +302,11 @@ class TestBryoden(unittest.TestCase):
 
         prob.setup(check=False)
 
-        with warnings.catch_warnings(record=True) as w:
+        msg = "The following states are not covered by a solver, and may have been " \
+              "omitted from the BroydenSolver 'state_vars': x3, x45"
+
+        with assert_warning(UserWarning, msg):
             prob.run_model()
-
-        self.assertEqual(len(w), 1)
-
-        msg = "The following states are not covered by a solver, and may have been omitted from the BroydenSolver 'state_vars': x3, x45"
-
-        self.assertEqual(str(w[0].message), msg)
 
     def test_mixed_promoted_vars(self):
         # Testing Broyden on a 5 state case split among 3 vars.
@@ -374,7 +370,48 @@ class TestBryoden(unittest.TestCase):
         prob.setup(check=False)
 
         model.nonlinear_solver.options['state_vars'] = ['state_eq.y2_command']
-        model.nonlinear_solver.linear_solver = DirectSolver()
+        model.nonlinear_solver.linear_solver = DirectSolver(assemble_jac=False)
+
+        prob.run_model()
+
+        assert_rel_error(self, prob['y1'], 25.58830273, .00001)
+        assert_rel_error(self, prob['state_eq.y2_command'], 12.05848819, .00001)
+
+        # Normally takes about 4 iters, but takes around 3 if you calculate an initial
+        # Jacobian.
+        self.assertTrue(model.nonlinear_solver._iter_count < 4)
+
+    def test_simple_sellar_jacobian_assembled(self):
+        # Test top level Sellar (i.e., not grouped).
+
+        prob = Problem()
+        model = prob.model = SellarStateConnection(nonlinear_solver=BroydenSolver(),
+                                                   linear_solver=LinearRunOnce())
+
+        prob.setup(check=False)
+
+        model.nonlinear_solver.linear_solver = DirectSolver(assemble_jac=True)
+
+        prob.run_model()
+
+        assert_rel_error(self, prob['y1'], 25.58830273, .00001)
+        assert_rel_error(self, prob['state_eq.y2_command'], 12.05848819, .00001)
+
+        # Normally takes about 4 iters, but takes around 3 if you calculate an initial
+        # Jacobian.
+        self.assertTrue(model.nonlinear_solver._iter_count < 4)
+
+    def test_simple_sellar_jacobian_assembled_dense(self):
+        # Test top level Sellar (i.e., not grouped).
+
+        prob = Problem()
+        model = prob.model = SellarStateConnection(nonlinear_solver=BroydenSolver(),
+                                                   linear_solver=LinearRunOnce())
+
+        prob.setup(check=False)
+
+        model.options['assembled_jac_type'] = 'dense'
+        model.nonlinear_solver.linear_solver = DirectSolver(assemble_jac=True)
 
         prob.run_model()
 
@@ -509,6 +546,130 @@ class TestBryoden(unittest.TestCase):
         top.run_model()
         assert_rel_error(self, top['comp.z'], 2.5, 1e-8)
 
+    def test_cs_around_broyden(self):
+        # Basic sellar test.
+
+        prob = Problem()
+        model = prob.model
+        sub = model.add_subsystem('sub', Group(), promotes=['*'])
+
+        model.add_subsystem('px', IndepVarComp('x', 1.0), promotes=['x'])
+        model.add_subsystem('pz', IndepVarComp('z', np.array([5.0, 2.0])), promotes=['z'])
+
+        sub.add_subsystem('d1', SellarDis1withDerivatives(), promotes=['x', 'z', 'y1', 'y2'])
+        sub.add_subsystem('d2', SellarDis2withDerivatives(), promotes=['z', 'y1', 'y2'])
+
+        model.add_subsystem('obj_cmp', ExecComp('obj = x**2 + z[1] + y1 + exp(-y2)',
+                                                z=np.array([0.0, 0.0]), x=0.0),
+                            promotes=['obj', 'x', 'z', 'y1', 'y2'])
+
+        model.add_subsystem('con_cmp1', ExecComp('con1 = 3.16 - y1'), promotes=['con1', 'y1'])
+        model.add_subsystem('con_cmp2', ExecComp('con2 = y2 - 24.0'), promotes=['con2', 'y2'])
+
+        sub.nonlinear_solver = BroydenSolver()
+        sub.linear_solver = DirectSolver()
+        model.linear_solver = DirectSolver()
+
+        prob.model.add_design_var('x', lower=-100, upper=100)
+        prob.model.add_design_var('z', lower=-100, upper=100)
+        prob.model.add_objective('obj')
+        prob.model.add_constraint('con1', upper=0.0)
+        prob.model.add_constraint('con2', upper=0.0)
+
+        prob.setup(check=False, force_alloc_complex=True)
+        prob.set_solver_print(level=2)
+
+        prob.run_model()
+
+        totals = prob.check_totals(method='cs', out_stream=None)
+
+        for key, val in iteritems(totals):
+            assert_rel_error(self, val['rel error'][0], 0.0, 1e-6)
+
+    def test_cs_around_broyden_compute_jac(self):
+        # Basic sellar test.
+
+        prob = Problem()
+        model = prob.model
+        sub = model.add_subsystem('sub', Group(), promotes=['*'])
+
+        model.add_subsystem('px', IndepVarComp('x', 1.0), promotes=['x'])
+        model.add_subsystem('pz', IndepVarComp('z', np.array([5.0, 2.0])), promotes=['z'])
+
+        sub.add_subsystem('d1', SellarDis1withDerivatives(), promotes=['x', 'z', 'y1', 'y2'])
+        sub.add_subsystem('d2', SellarDis2withDerivatives(), promotes=['z', 'y1', 'y2'])
+
+        model.add_subsystem('obj_cmp', ExecComp('obj = x**2 + z[1] + y1 + exp(-y2)',
+                                                z=np.array([0.0, 0.0]), x=0.0),
+                            promotes=['obj', 'x', 'z', 'y1', 'y2'])
+
+        model.add_subsystem('con_cmp1', ExecComp('con1 = 3.16 - y1'), promotes=['con1', 'y1'])
+        model.add_subsystem('con_cmp2', ExecComp('con2 = y2 - 24.0'), promotes=['con2', 'y2'])
+
+        sub.nonlinear_solver = BroydenSolver()
+        sub.linear_solver = DirectSolver(assemble_jac=False)
+        model.linear_solver = DirectSolver(assemble_jac=False)
+
+        prob.model.add_design_var('x', lower=-100, upper=100)
+        prob.model.add_design_var('z', lower=-100, upper=100)
+        prob.model.add_objective('obj')
+        prob.model.add_constraint('con1', upper=0.0)
+        prob.model.add_constraint('con2', upper=0.0)
+
+        prob.setup(check=False, force_alloc_complex=True)
+        prob.set_solver_print(level=0)
+
+        prob.run_model()
+
+        sub.nonlinear_solver.options['compute_jacobian'] = True
+
+        totals = prob.check_totals(method='cs', out_stream=None)
+
+        for key, val in iteritems(totals):
+            assert_rel_error(self, val['rel error'][0], 0.0, 1e-6)
+
+    def test_cs_around_broyden_compute_jac_dense(self):
+        # Basic sellar test.
+
+        prob = Problem()
+        model = prob.model
+        sub = model.add_subsystem('sub', Group(), promotes=['*'])
+
+        model.add_subsystem('px', IndepVarComp('x', 1.0), promotes=['x'])
+        model.add_subsystem('pz', IndepVarComp('z', np.array([5.0, 2.0])), promotes=['z'])
+
+        sub.add_subsystem('d1', SellarDis1withDerivatives(), promotes=['x', 'z', 'y1', 'y2'])
+        sub.add_subsystem('d2', SellarDis2withDerivatives(), promotes=['z', 'y1', 'y2'])
+
+        model.add_subsystem('obj_cmp', ExecComp('obj = x**2 + z[1] + y1 + exp(-y2)',
+                                                z=np.array([0.0, 0.0]), x=0.0),
+                            promotes=['obj', 'x', 'z', 'y1', 'y2'])
+
+        model.add_subsystem('con_cmp1', ExecComp('con1 = 3.16 - y1'), promotes=['con1', 'y1'])
+        model.add_subsystem('con_cmp2', ExecComp('con2 = y2 - 24.0'), promotes=['con2', 'y2'])
+
+        sub.nonlinear_solver = BroydenSolver()
+        sub.linear_solver = DirectSolver()
+        model.linear_solver = DirectSolver()
+
+        prob.model.add_design_var('x', lower=-100, upper=100)
+        prob.model.add_design_var('z', lower=-100, upper=100)
+        prob.model.add_objective('obj')
+        prob.model.add_constraint('con1', upper=0.0)
+        prob.model.add_constraint('con2', upper=0.0)
+
+        prob.setup(check=False, force_alloc_complex=True)
+        prob.set_solver_print(level=0)
+
+        prob.run_model()
+
+        sub.nonlinear_solver.options['compute_jacobian'] = True
+
+        totals = prob.check_totals(method='cs', out_stream=None)
+
+        for key, val in iteritems(totals):
+            assert_rel_error(self, val['rel error'][0], 0.0, 1e-6)
+
 
 class TestBryodenFeature(unittest.TestCase):
 
@@ -532,9 +693,9 @@ class TestBryodenFeature(unittest.TestCase):
         assert_rel_error(self, prob['state_eq.y2_command'], 12.05848819, .00001)
 
     def test_circuit(self):
-        from openmdao.api import Group, BroydenSolver, DirectSolver, Problem, IndepVarComp
+        from openmdao.api import Group, BroydenSolver, DirectSolver, Problem, IndepVarComp, LinearBlockGS
 
-        from openmdao.test_suite.test_examples.test_circuit_analysis import Circuit
+        from openmdao.test_suite.scripts.circuit_analysis import Circuit
 
         p = Problem()
         model = p.model
@@ -573,7 +734,7 @@ class TestBryodenFeature(unittest.TestCase):
     def test_circuit_options(self):
         from openmdao.api import Group, BroydenSolver, DirectSolver, Problem, IndepVarComp
 
-        from openmdao.test_suite.test_examples.test_circuit_analysis import Circuit
+        from openmdao.test_suite.scripts.circuit_analysis import Circuit
 
         p = Problem()
         model = p.model
@@ -612,7 +773,7 @@ class TestBryodenFeature(unittest.TestCase):
     def test_circuit_full(self):
         from openmdao.api import Group, BroydenSolver, DirectSolver, Problem, IndepVarComp
 
-        from openmdao.test_suite.test_examples.test_circuit_analysis import Circuit
+        from openmdao.test_suite.scripts.circuit_analysis import Circuit
 
         p = Problem()
         model = p.model

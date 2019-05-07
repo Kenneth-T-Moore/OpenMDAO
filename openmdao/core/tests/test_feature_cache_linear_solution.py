@@ -1,12 +1,13 @@
 """Test for a feature doc showing how to use cache_linear_solution"""
 from __future__ import division
 
+from distutils.version import LooseVersion
 import unittest
 from six.moves import cStringIO
 
 import numpy as np
+import scipy
 from scipy.sparse.linalg import gmres
-
 
 from openmdao.api import Problem, Group, ImplicitComponent, IndepVarComp
 from openmdao.utils.assert_utils import assert_rel_error
@@ -16,7 +17,9 @@ class CacheLinearTestCase(unittest.TestCase):
 
     def test_feature_cache_linear(self):
 
+        from distutils.version import LooseVersion
         import numpy as np
+        import scipy
         from scipy.sparse.linalg import gmres
 
         from openmdao.api import ImplicitComponent, Group, IndepVarComp, Problem
@@ -75,11 +78,15 @@ class CacheLinearTestCase(unittest.TestCase):
 
                 if mode == 'fwd':
                     print("incoming initial guess", d_outputs['states'])
-                    d_outputs['states'] = gmres(self.state_jac, d_residuals['states'], x0=d_outputs['states'])[0]
-
+                    if LooseVersion(scipy.__version__) < LooseVersion("1.1"):
+                        d_outputs['states'] = gmres(self.state_jac, d_residuals['states'], x0=d_outputs['states'])[0]
+                    else:
+                        d_outputs['states'] = gmres(self.state_jac, d_residuals['states'], x0=d_outputs['states'], atol='legacy')[0]
                 elif mode == 'rev':
-                    d_residuals['states'] = gmres(self.state_jac, d_outputs['states'], x0=d_residuals['states'])[0]
-
+                    if LooseVersion(scipy.__version__) < LooseVersion("1.1"):
+                        d_residuals['states'] = gmres(self.state_jac, d_outputs['states'], x0=d_residuals['states'])[0]
+                    else:
+                        d_residuals['states'] = gmres(self.state_jac, d_outputs['states'], x0=d_residuals['states'], atol='legacy')[0]
 
         p = Problem()
         p.model = Group()

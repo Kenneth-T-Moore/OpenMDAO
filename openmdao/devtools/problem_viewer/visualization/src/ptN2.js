@@ -12,7 +12,12 @@ function PtN2Diagram(parentDiv, modelData) {
     var transitionStartDelay = DEFAULT_TRANSITION_START_DELAY;
     var idCounter = 0;
     var maxDepth = 1;
+
+    var maxSystemDepth = 1; // For use with the right hand side solver tree. Only want max depth of solvers, not params,..
+
     var RIGHT_TEXT_MARGIN_PX = 8; // How much space in px (left and) right of text in partition tree
+
+    var text_width_cache = {}; // used to speed up GetTextWidth using memoization
 
     //N^2 vars
     var backButtonHistory = [], forwardButtonHistory = [];
@@ -54,7 +59,8 @@ function PtN2Diagram(parentDiv, modelData) {
         .attr("class", "arrowHead");
 
     setN2Group();
-    var pTreeGroup = svg.append("g");
+    var pTreeGroup = svg.append("g").attr("id", "tree"); // id given just so it is easier to see in Chrome dev tools when debugging
+    var pSolverTreeGroup = svg.append("g").attr("id", "solver_tree");
 
     function updateRootTypes() {
         if (!showParams) return;
@@ -116,12 +122,7 @@ function PtN2Diagram(parentDiv, modelData) {
 
             text += "<br />self.connect(\"" + unknownName + "\", \"" + paramName + "\")";
         }
-        if({{draw_potential_connections}}) {
-             parentDiv.querySelector("#connectionId").innerHTML = text;
-        }
-        else {
-            parentDiv.querySelector("#connectionId").innerHTML = "";
-        }
+        parentDiv.querySelector("#connectionId").innerHTML = "";
     }
     var n2BackgroundRect = n2Group.append("rect")
         .attr("class", "background")
@@ -184,26 +185,6 @@ function PtN2Diagram(parentDiv, modelData) {
             var param = d3RightTextNodesArrayZoomed[c],
                 unknown = d3RightTextNodesArrayZoomed[r];
             if (param.type !== "param" && unknown.type !== "unknown") return;
-            if (r > c && {{draw_potential_connections}}) { //bottom left
-                DrawPathTwoLines(
-                    n2Dx * r, //x1
-                    n2Dy * r + n2Dy * .5, //y1
-                    n2Dx * c + n2Dx * .5, //left x2
-                    n2Dy * r + n2Dy * .5, //left y2
-                    n2Dx * c + n2Dx * .5, //up x3
-                    n2Dy * c + n2Dy - 1e-2, //up y3
-                    "blue", lineWidth, true);
-            }
-            else if (r < c && {{draw_potential_connections}}) { //top right
-                DrawPathTwoLines(
-                    n2Dx * r + n2Dx, //x1
-                    n2Dy * r + n2Dy * .5, //y1
-                    n2Dx * c + n2Dx * .5, //right x2
-                    n2Dy * r + n2Dy * .5, //right y2
-                    n2Dx * c + n2Dx * .5, //down x3
-                    n2Dy * c + 1e-2, //down y3
-                    "blue", lineWidth, true);
-            }
             var leftTextWidthR = d3RightTextNodesArrayZoomed[r].nameWidthPx,
                 leftTextWidthC = d3RightTextNodesArrayZoomed[c].nameWidthPx;
             DrawRect(-leftTextWidthR - PTREE_N2_GAP_PX, n2Dy * r, leftTextWidthR, n2Dy, "blue"); //highlight var name
@@ -219,9 +200,6 @@ function PtN2Diagram(parentDiv, modelData) {
                     "<b>" + zoomedElement.promotions[unknown.absPathName] + "</b>" :
                     ((zoomedElement === root) ? unknown.absPathName : unknown.absPathName.slice(zoomedElement.absPathName.length + 1));
 
-                if({{draw_potential_connections}}) {
-                    parentDiv.querySelector("#connectionId").innerHTML += "<br /><i style=\"color:red;\">self.connect(\"" + unknownName + "\", \"" + paramName + "\")</i>";
-                }
             }
         });
 
@@ -252,10 +230,10 @@ function PtN2Diagram(parentDiv, modelData) {
         collapseDepthElement.appendChild(option);
     }
 
-    Update();
+    Update(computeNewTreeLayout=false);
     SetupLegend(d3, d3ContentDiv);
 
-    function Update() {
+    function Update(computeNewTreeLayout=true) {
         parentDiv.querySelector("#currentPathId").innerHTML = "PATH: root" + ((zoomedElement.parent) ? "." : "") + zoomedElement.absPathName;
 
         parentDiv.querySelector("#backButtonId").disabled = (backButtonHistory.length == 0) ? "disabled" : false;
@@ -264,8 +242,10 @@ function PtN2Diagram(parentDiv, modelData) {
         parentDiv.querySelector("#returnToRootButtonId").disabled = (zoomedElement === root) ? "disabled" : false;
 
         // Compute the new tree layout.
-        ComputeLayout(); //updates d3NodesArray
-        ComputeMatrixN2();
+        if (computeNewTreeLayout) {
+            ComputeLayout(); //updates d3NodesArray
+            ComputeMatrixN2();
+        }
 
         for (var i = 2; i <= maxDepth; ++i) {
             parentDiv.querySelector("#idCollapseDepthOption" + i + "").style.display = (i <= zoomedElement.depth) ? "none" : "block";
@@ -276,6 +256,11 @@ function PtN2Diagram(parentDiv, modelData) {
             ky0 = ky;
             xScalerPTree0 = xScalerPTree.copy();
             yScalerPTree0 = yScalerPTree.copy();
+
+            kxSolver0 = kxSolver;
+            kySolver0 = kySolver;
+            xScalerPSolverTree0 = xScalerPSolverTree.copy();
+            yScalerPSolverTree0 = yScalerPSolverTree.copy();
         }
 
         kx = (zoomedElement.x ? widthPTreePx - PARENT_NODE_WIDTH_PX : widthPTreePx) / (1 - zoomedElement.x);
@@ -283,32 +268,48 @@ function PtN2Diagram(parentDiv, modelData) {
         xScalerPTree.domain([zoomedElement.x, 1]).range([zoomedElement.x ? PARENT_NODE_WIDTH_PX : 0, widthPTreePx]);
         yScalerPTree.domain([zoomedElement.y, zoomedElement.y + zoomedElement.height]).range([0, HEIGHT_PX]);
 
+        kxSolver = (zoomedElement.xSolver ? widthPSolverTreePx - PARENT_NODE_WIDTH_PX : widthPSolverTreePx) / (1 - zoomedElement.xSolver);
+        kySolver = HEIGHT_PX / zoomedElement.heightSolver;
+        xScalerPSolverTree.domain([zoomedElement.xSolver, 1]).range([zoomedElement.xSolver ? PARENT_NODE_WIDTH_PX : 0, widthPSolverTreePx]);
+        yScalerPSolverTree.domain([zoomedElement.ySolver, zoomedElement.ySolver + zoomedElement.heightSolver]).range([0, HEIGHT_PX]);
+
         if (xScalerPTree0 == null) { //first run.. duplicate
             kx0 = kx;
             ky0 = ky;
             xScalerPTree0 = xScalerPTree.copy();
             yScalerPTree0 = yScalerPTree.copy();
 
+            kxSolver0 = kxSolver;
+            kySolver0 = kySolver;
+            xScalerPSolverTree0 = xScalerPSolverTree.copy();
+            yScalerPSolverTree0 = yScalerPSolverTree.copy();
+
             //Update svg dimensions before ComputeLayout() changes widthPTreePx
-            svgDiv.style("width", (widthPTreePx + PTREE_N2_GAP_PX + WIDTH_N2_PX + 2 * SVG_MARGIN) + "px")
+            svgDiv.style("width", (widthPTreePx + PTREE_N2_GAP_PX + WIDTH_N2_PX + widthPSolverTreePx + 2 * SVG_MARGIN + PTREE_N2_GAP_PX) + "px")
                   .style("height", (HEIGHT_PX + 2 * SVG_MARGIN) + "px");
-            svg.attr("width", widthPTreePx + PTREE_N2_GAP_PX + WIDTH_N2_PX + 2 * SVG_MARGIN)
+            svg.attr("width", widthPTreePx + PTREE_N2_GAP_PX + WIDTH_N2_PX + widthPSolverTreePx + 2 * SVG_MARGIN + PTREE_N2_GAP_PX)
                .attr("height", HEIGHT_PX + 2 * SVG_MARGIN);
+
             n2Group.attr("transform", "translate(" + (widthPTreePx + PTREE_N2_GAP_PX + SVG_MARGIN) + "," + SVG_MARGIN + ")");
             pTreeGroup.attr("transform", "translate(" + SVG_MARGIN + "," + SVG_MARGIN + ")");
+
+            pSolverTreeGroup.attr("transform", "translate(" + (widthPTreePx + PTREE_N2_GAP_PX + WIDTH_N2_PX + SVG_MARGIN + PTREE_N2_GAP_PX) + "," + SVG_MARGIN + ")");
         }
 
         sharedTransition = d3.transition().duration(TRANSITION_DURATION).delay(transitionStartDelay); //do this after intense computation
         transitionStartDelay = DEFAULT_TRANSITION_START_DELAY;
 
         //Update svg dimensions with transition after ComputeLayout() changes widthPTreePx
-        svgDiv.transition(sharedTransition).style("width", (widthPTreePx + PTREE_N2_GAP_PX + WIDTH_N2_PX + 2 * SVG_MARGIN) + "px")
+        svgDiv.transition(sharedTransition).style("width", (widthPTreePx + PTREE_N2_GAP_PX + WIDTH_N2_PX + widthPSolverTreePx + 2 * SVG_MARGIN + PTREE_N2_GAP_PX) + "px")
             .style("height", (HEIGHT_PX + 2 * SVG_MARGIN) + "px");
-        svg.transition(sharedTransition).attr("width", widthPTreePx + PTREE_N2_GAP_PX + WIDTH_N2_PX + 2 * SVG_MARGIN)
+        svg.transition(sharedTransition).attr("width", widthPTreePx + PTREE_N2_GAP_PX + WIDTH_N2_PX + widthPSolverTreePx + 2 * SVG_MARGIN + PTREE_N2_GAP_PX)
             .attr("height", HEIGHT_PX + 2 * SVG_MARGIN);
+
         n2Group.transition(sharedTransition).attr("transform", "translate(" + (widthPTreePx + PTREE_N2_GAP_PX + SVG_MARGIN) + "," + SVG_MARGIN + ")");
         pTreeGroup.transition(sharedTransition).attr("transform", "translate(" + SVG_MARGIN + "," + SVG_MARGIN + ")");
         n2BackgroundRect.transition(sharedTransition).attr("width", WIDTH_N2_PX).attr("height", HEIGHT_PX);
+
+        pSolverTreeGroup.transition(sharedTransition).attr("transform", "translate(" + (widthPTreePx + PTREE_N2_GAP_PX + WIDTH_N2_PX + SVG_MARGIN + PTREE_N2_GAP_PX) + "," + SVG_MARGIN + ")");
 
         var sel = pTreeGroup.selectAll(".partition_group")
             .data(d3NodesArray, function (d) {
@@ -422,6 +423,137 @@ function PtN2Diagram(parentDiv, modelData) {
             .style("opacity", 0);
 
 
+       var selSolver = pSolverTreeGroup.selectAll(".solver_group")
+            .data(d3SolverNodesArray, function (d) {
+                return d.id;
+            });
+
+        function getSolverClass(showLinearSolverNames, linear_solver_name, nonlinear_solver_name){
+            if (showLinearSolverNames){
+                if (linearSolverNames.indexOf(linear_solver_name) >= 0){
+                    solver_class = linearSolverClasses[linear_solver_name]
+                } else {
+                    solver_class = linearSolverClasses["other"]; // user must have defined their own solver that we do not know about
+                }
+            } else {
+                if (nonLinearSolverNames.indexOf(nonlinear_solver_name) >= 0){
+                    solver_class = nonLinearSolverClasses[nonlinear_solver_name]
+                } else {
+                    solver_class = nonLinearSolverClasses["other"]; // user must have defined their own solver that we do not know about
+                }
+            }
+            return solver_class;
+        }
+
+        var nodeSolverEnter = selSolver.enter().append("svg:g")
+            .attr("class", function (d) {
+                solver_class = getSolverClass(showLinearSolverNames, d.linear_solver, d.nonlinear_solver) ;
+                return solver_class + " " + "solver_group " + GetClass(d) ;
+            })
+            .attr("transform", function (d) {
+                x = 1.0 - d.xSolver0 - d.widthSolver0; // The magic for reversing the blocks on the right side
+                // The solver tree goes from the root on the right and expands to the left
+                return "translate(" + xScalerPSolverTree0(x) + "," + yScalerPSolverTree0(d.ySolver0) + ")";
+            })
+            .on("click", function (d) { LeftClick(d, this); })
+            .on("contextmenu", function (d) { RightClick(d, this); })
+            .on("mouseover", function (d) {
+                if (abs2prom != undefined) {
+                    if (d.type == "param" || d.type == "unconnected_param") {
+                        return tooltip.text(abs2prom.input[d.absPathName])
+                                      .style("visibility", "visible");
+                    }
+                    if (d.type == "unknown") {
+                        return tooltip.text(abs2prom.output[d.absPathName])
+                                      .style("visibility", "visible");
+                    }
+                }
+            })
+            .on("mouseleave", function (d) {
+                if (abs2prom != undefined) {
+                    return tooltip.style("visibility", "hidden");
+                }
+            })
+            .on("mousemove", function(){
+                if (abs2prom != undefined) {
+                    return tooltip.style("top", (d3.event.pageY-30)+"px")
+                                  .style("left",(d3.event.pageX+5)+"px");
+                }
+            });
+
+        nodeSolverEnter.append("svg:rect")
+            .attr("width", function (d) {
+                return d.widthSolver0 * kxSolver0;//0;//
+            })
+            .attr("height", function (d) {
+                return d.heightSolver0 * kySolver0;
+            });
+
+        nodeSolverEnter.append("svg:text")
+            .attr("dy", ".35em")
+            .attr("transform", function (d) {
+                var anchorX = d.widthSolver0 * kxSolver0 - RIGHT_TEXT_MARGIN_PX;
+                return "translate(" + anchorX + "," + d.heightSolver0 * kySolver0 / 2 + ")";
+            })
+            .style("opacity", function (d) {
+                if (d.depth < zoomedElement.depth) return 0;
+                return d.textOpacity0;
+            })
+            .text(GetSolverText);
+
+        var nodeSolverUpdate = nodeSolverEnter.merge(selSolver).transition(sharedTransition)
+            .attr("class", function (d) {
+                solver_class = getSolverClass(showLinearSolverNames, d.linear_solver, d.nonlinear_solver) ;
+                return solver_class + " " + "solver_group " + GetClass(d) ;
+            })
+            .attr("transform", function (d) {
+                x = 1.0 - d.xSolver - d.widthSolver; // The magic for reversing the blocks on the right side
+                return "translate(" + xScalerPSolverTree(x) + "," + yScalerPSolverTree(d.ySolver) + ")";
+            });
+
+        nodeSolverUpdate.select("rect")
+            .attr("width", function (d) {
+                return d.widthSolver * kxSolver;
+            })
+            .attr("height", function (d) {
+                return d.heightSolver * kySolver;
+            });
+
+        nodeSolverUpdate.select("text")
+            .attr("transform", function (d) {
+                var anchorX = d.widthSolver * kxSolver - RIGHT_TEXT_MARGIN_PX;
+                return "translate(" + anchorX + "," + d.heightSolver * kySolver / 2 + ")";
+            })
+            .style("opacity", function (d) {
+                if (d.depth < zoomedElement.depth) return 0;
+                return d.textOpacity;
+            })
+            .text(GetSolverText);
+
+
+        // Transition exiting nodes to the parent's new position.
+        var nodeSolverExit = selSolver.exit().transition(sharedTransition)
+            .attr("transform", function (d) {
+                return "translate(" + xScalerPSolverTree(d.xSolver) + "," + yScalerPSolverTree(d.ySolver) + ")";
+            })
+            .remove();
+
+        nodeSolverExit.select("rect")
+            .attr("width", function (d) {
+                return d.widthSolver * kxSolver;//0;//
+            })
+            .attr("height", function (d) {
+                return d.heightSolver * kySolver;
+            });
+
+        nodeSolverExit.select("text")
+            .attr("transform", function (d) {
+                var anchorX = d.widthSolver * kxSolver - RIGHT_TEXT_MARGIN_PX;
+                return "translate(" + anchorX + "," + d.heightSolver * kySolver / 2 + ")";
+            })
+            .style("opacity", 0);
+
+
         ClearArrowsAndConnects()
         DrawMatrix();
     }
@@ -518,6 +650,11 @@ function PtN2Diagram(parentDiv, modelData) {
         return retVal;
     }
 
+    function GetSolverText(d) {
+        var retVal = showLinearSolverNames ? d.linear_solver : d.nonlinear_solver;
+        return retVal;
+    }
+
     //Sets parents, depth, and nameWidthPx of all nodes.  Also finds and sets maxDepth.
     function InitTree(d, parent, depth) {
         d.numLeaves = 0; //for nested params
@@ -548,6 +685,11 @@ function PtN2Diagram(parentDiv, modelData) {
             }
         }
         maxDepth = Math.max(depth, maxDepth);
+
+        if (d.type === "subsystem") {
+            maxSystemDepth = Math.max(depth, maxSystemDepth);
+        }
+
         if (d.children) {
             for (var i = 0; i < d.children.length; ++i) {
                 var implicit = InitTree(d.children[i], d, depth + 1);
@@ -563,6 +705,9 @@ function PtN2Diagram(parentDiv, modelData) {
     function ComputeLayout() {
         var columnWidthsPx = new Array(maxDepth + 1).fill(0.0),// since depth is one based
             columnLocationsPx = new Array(maxDepth + 1).fill(0.0);
+
+        var columnSolverWidthsPx = new Array(maxDepth + 1).fill(0.0),// since depth is one based
+            columnSolverLocationsPx = new Array(maxDepth + 1).fill(0.0);
 
         var textWidthGroup = svg.append("svg:g").attr("class", "partition_group");
         var textWidthText = textWidthGroup.append("svg:text")
@@ -603,8 +748,16 @@ function PtN2Diagram(parentDiv, modelData) {
         }
 
         function GetTextWidth(s) {
+            var width ;
+
+            if ( text_width_cache[ s ] != null )
+                return text_width_cache[ s ];
+
             textWidthText.text(s);
-            return textWidthTextNode.getBoundingClientRect().width;
+            width = textWidthTextNode.getBoundingClientRect().width;
+
+            text_width_cache[ s ] = width;
+            return width;
         }
 
         function UpdateTextWidths(d) {
@@ -613,6 +766,16 @@ function PtN2Diagram(parentDiv, modelData) {
             if (d.children) {
                 for (var i = 0; i < d.children.length; ++i) {
                     UpdateTextWidths(d.children[i]);
+                }
+            }
+        }
+
+        function UpdateSolverTextWidths(d) {
+            if ((d.type === "param" || d.type === "unconnected_param") || d.varIsHidden) return;
+            d.nameSolverWidthPx = GetTextWidth(GetSolverText(d)) + 2 * RIGHT_TEXT_MARGIN_PX;
+            if (d.children) {
+                for (var i = 0; i < d.children.length; ++i) {
+                    UpdateSolverTextWidths(d.children[i]);
                 }
             }
         }
@@ -660,6 +823,47 @@ function PtN2Diagram(parentDiv, modelData) {
 
         }
 
+        function ComputeSolverColumnWidths(d) {
+            var greatestDepth = 0;
+            var leafSolverWidthsPx = new Array(maxDepth + 1).fill(0.0);
+
+            function DoComputeSolverColumnWidths(d) {
+                var heightPx = HEIGHT_PX * d.numSolverLeaves / zoomedElement.numSolverLeaves;
+                d.textOpacity0 = d.hasOwnProperty('textOpacity') ? d.textOpacity : 0;
+                d.textOpacity = (heightPx > FONT_SIZE_PX) ? 1 : 0;
+                var hasVisibleDetail = (heightPx >= 2.0);
+                var widthPx = 1e-3;
+                if (hasVisibleDetail) widthPx = MIN_COLUMN_WIDTH_PX;
+                if (d.textOpacity > 0.5) widthPx = d.nameSolverWidthPx;
+
+                greatestDepth = Math.max(greatestDepth, d.depth);
+
+                if (d.subsystem_children && !d.isMinimized) { //not leaf
+                    columnSolverWidthsPx[d.depth] = Math.max(columnSolverWidthsPx[d.depth], widthPx);
+                    for (var i = 0; i < d.subsystem_children.length; ++i) {
+                        DoComputeSolverColumnWidths(d.subsystem_children[i]);
+                    }
+                }
+                else { //leaf
+                    leafSolverWidthsPx[d.depth] = Math.max(leafSolverWidthsPx[d.depth], widthPx);
+                }
+            }
+
+            DoComputeSolverColumnWidths(d);
+
+
+            var sum = 0;
+            var lastColumnWidth = 0;
+            for (var i = leafSolverWidthsPx.length - 1; i >= zoomedElement.depth; --i) {
+                sum += columnSolverWidthsPx[i];
+                var lastWidthNeeded = leafSolverWidthsPx[i] - sum;
+                lastColumnWidth = Math.max(lastWidthNeeded, lastColumnWidth);
+            }
+            columnSolverWidthsPx[zoomedElement.depth - 1] = PARENT_NODE_WIDTH_PX;
+            columnSolverWidthsPx[greatestDepth] = lastColumnWidth;
+
+        }
+
 
         function ComputeLeaves(d) {
             if ((!showParams && (d.type === "param" || d.type === "unconnected_params")) || d.varIsHidden) {
@@ -673,6 +877,22 @@ function PtN2Diagram(parentDiv, modelData) {
             for (var i = 0; i < d.children.length; ++i) {
                 ComputeLeaves(d.children[i]);
                 d.numLeaves += d.children[i].numLeaves;
+            }
+        }
+
+        function ComputeSolverLeaves(d) {
+            if ((!showParams && (d.type === "param" || d.type === "unconnected_params")) || d.varIsHidden) {
+                d.numSolverLeaves = 0;
+                return;
+            }
+
+            var doRecurse = d.children && !d.isMinimized;
+            d.numSolverLeaves = doRecurse ? 0 : 1; //no children: init to 0 because will be added later
+            if (!doRecurse) return;
+
+            for (var i = 0; i < d.children.length; ++i) {
+                ComputeSolverLeaves(d.children[i]);
+                d.numSolverLeaves += d.children[i].numSolverLeaves;
             }
         }
 
@@ -714,14 +934,87 @@ function PtN2Diagram(parentDiv, modelData) {
         }
 
 
+        function ComputeSolverNormalizedPositions(d, leafCounter, isChildOfZoomed, earliestMinimizedParent) {
+            isChildOfZoomed = (isChildOfZoomed) ? true : (d === zoomedElement);
+            if (earliestMinimizedParent == null && isChildOfZoomed) {
+                if (d.type === "subsystem" || d.type === "root" ) d3SolverNodesArray.push(d);
+                if (!d.children || d.isMinimized) { //at a "leaf" node
+                    if ((d.type !== "param" && d.type !== "unconnected_param") && !d.varIsHidden) d3SolverRightTextNodesArrayZoomed.push(d);
+                    earliestMinimizedParent = d;
+                }
+            }
+            var node = (earliestMinimizedParent) ? earliestMinimizedParent : d;
+            d.rootIndex0 = d.hasOwnProperty('rootIndex') ? d.rootIndex : leafCounter;
+            d.xSolver0 = d.hasOwnProperty('xSolver') ? d.xSolver : 1e-6;
+            d.ySolver0 = d.hasOwnProperty('ySolver') ? d.ySolver : 1e-6;
+            d.widthSolver0 = d.hasOwnProperty('widthSolver') ? d.widthSolver : 1e-6;
+            d.heightSolver0 = d.hasOwnProperty('heightSolver') ? d.heightSolver : 1e-6;
+            d.xSolver = columnSolverLocationsPx[node.depth] / widthPSolverTreePx;
+            d.ySolver = leafCounter / root.numSolverLeaves;
+            d.widthSolver = (d.subsystem_children && !d.isMinimized) ? (columnSolverWidthsPx[node.depth] / widthPSolverTreePx) : 1 - node.xSolver;//1-d.x;
+
+            d.heightSolver = node.numSolverLeaves / root.numSolverLeaves; 111
+
+
+
+
+
+
+            if ((!showParams && (d.type === "param" || d.type === "unconnected_param")) || d.varIsHidden) { //param or hidden leaf leaving
+                d.xSolver = columnLocationsPx[d.parentComponent.depthqqq + 1] / widthPTreePx;
+                d.ySolver = d.parentComponent.y;
+                d.widthSolver = 1e-6;
+                d.heightSolver = 1e-6;
+            }
+
+
+
+
+
+
+            if (d.children) {
+                for (var i = 0; i < d.children.length; ++i) {
+                    ComputeSolverNormalizedPositions(d.children[i], leafCounter, isChildOfZoomed, earliestMinimizedParent);
+                    if (earliestMinimizedParent == null) { //numleaves is only valid passed nonminimized nodes
+                        leafCounter += d.children[i].numSolverLeaves;
+                    }
+                }
+            }
+        }
 
         UpdateTextWidths(zoomedElement);
+
+        UpdateSolverTextWidths(zoomedElement);
+
         ComputeLeaves(root);
+
+        ComputeSolverLeaves(root);
+
         d3NodesArray = [];
         d3RightTextNodesArrayZoomed = [];
 
-        //COLUMN WIDTH COMPUTATION
+        d3SolverNodesArray = [];
+        d3SolverRightTextNodesArrayZoomed = [];
+
         ComputeColumnWidths(zoomedElement);
+
+        function InitSubSystemChildren(d){
+            for (var i = 0; i < d.children.length; ++i) {
+                var child = d.children[i];
+                if (child.type === "subsystem"){
+                    if (!d.hasOwnProperty("subsystem_children")) {
+                        d.subsystem_children = [];
+                    }
+                    d.subsystem_children.push(child);
+                    InitSubSystemChildren(child);
+                }
+            }
+        }
+
+        InitSubSystemChildren(root);
+
+        ComputeSolverColumnWidths(zoomedElement);
+
         // Now the column_width array is relative to the zoomedElement
         //    and the computation of the widths only includes visible items after the zoom
         widthPTreePx = 0;
@@ -730,9 +1023,20 @@ function PtN2Diagram(parentDiv, modelData) {
             widthPTreePx += columnWidthsPx[depth];
         }
 
+        widthPSolverTreePx = 0;
+        for (var depth = 1; depth <= maxDepth; ++depth) {
+            columnSolverLocationsPx[depth] = widthPSolverTreePx;
+            widthPSolverTreePx += columnSolverWidthsPx[depth];
+        }
+
         ComputeNormalizedPositions(root, 0, false, null);
         if (zoomedElement.parent) {
             d3NodesArray.push(zoomedElement.parent);
+        }
+
+        ComputeSolverNormalizedPositions(root, 0, false, null);
+        if (zoomedElement.parent) {
+            d3SolverNodesArray.push(zoomedElement.parent);
         }
 
         if (updateRecomputesAutoComplete) {
@@ -782,7 +1086,7 @@ function PtN2Diagram(parentDiv, modelData) {
             TRANSITION_DURATION = TRANSITION_DURATION_FAST;
             lastClickWasLeft = false;
             Toggle(d);
-            Update(d);
+            Update();
         }
     }
 
@@ -896,31 +1200,6 @@ function PtN2Diagram(parentDiv, modelData) {
             return null;
         }
 
-        function RemoveDuplicates(d) { //remove redundant elements in every objects' sources and targets arrays
-            if (d.children) {
-                for (var i = 0; i < d.children.length; ++i) {
-                    RemoveDuplicates(d.children[i]);
-                }
-            }
-
-            function unique(elem, pos, arr) {
-                return arr.indexOf(elem) == pos;
-            }
-
-            if (d.targetsParamView) {
-                //numElementsBefore += d.targetsParamView.length;
-                var uniqueArray = d.targetsParamView.filter(unique);
-                d.targetsParamView = uniqueArray;
-                //numElementsAfter += d.targetsParamView.length;
-            }
-            if (d.targetsHideParams) {
-                //numElementsBefore += d.targetsHideParams.length;
-                var uniqueArray = d.targetsHideParams.filter(unique);
-                d.targetsHideParams = uniqueArray;
-                //numElementsAfter += d.targetsHideParams.length;
-            }
-        }
-
         function AddLeaves(d, objArray) {
             if (d.type !== "param" && d.type !== "unconnected_param") {
                 objArray.push(d);
@@ -933,8 +1212,9 @@ function PtN2Diagram(parentDiv, modelData) {
         }
 
         function ClearConnections(d) {
-            d.targetsParamView = [];
-            d.targetsHideParams = [];
+            d.targetsParamView = new Set();
+            d.targetsHideParams = new Set();
+
             if (d.children) {
                 for (var i = 0; i < d.children.length; ++i) {
                     ClearConnections(d.children[i]);
@@ -943,6 +1223,8 @@ function PtN2Diagram(parentDiv, modelData) {
         }
 
         ClearConnections(root);
+
+        var sys_pathnames = modelData.sys_pathnames_list;
 
         for (var i = 0; i < conns.length; ++i) {
             var srcSplitArray = conns[i].src.split(/\.|:/);
@@ -988,31 +1270,36 @@ function PtN2Diagram(parentDiv, modelData) {
 
 
             for (var j = 0; j < srcObjArray.length; ++j) {
-                if (!srcObjArray[j].hasOwnProperty('targetsParamView')) srcObjArray[j].targetsParamView = [];
-                if (!srcObjArray[j].hasOwnProperty('targetsHideParams')) srcObjArray[j].targetsHideParams = [];
-                srcObjArray[j].targetsParamView = srcObjArray[j].targetsParamView.concat(tgtObjArrayParamView);
-                srcObjArray[j].targetsHideParams = srcObjArray[j].targetsHideParams.concat(tgtObjArrayHideParams);
+                if (!srcObjArray[j].hasOwnProperty('targetsParamView')) srcObjArray[j].targetsParamView = new Set();
+                if (!srcObjArray[j].hasOwnProperty('targetsHideParams')) srcObjArray[j].targetsHideParams = new Set();
+
+                tgtObjArrayParamView.forEach(item => srcObjArray[j].targetsParamView.add(item));
+                tgtObjArrayHideParams.forEach(item => srcObjArray[j].targetsHideParams.add(item));
             }
 
             var cycleArrowsArray = [];
             if (conns[i].cycle_arrows && conns[i].cycle_arrows.length > 0) {
                 var cycleArrows = conns[i].cycle_arrows;
                 for (var j = 0; j < cycleArrows.length; ++j) {
-                    var cycleArrowsSplitArray = cycleArrows[j].split(" ");
-                    if (cycleArrowsSplitArray.length != 2) {
-                        alert("error: cycleArrowsSplitArray length not 2: got " + cycleArrowsSplitArray.length);
+                    if (cycleArrows[j].length != 2) {
+                        alert("error: cycleArrowsSplitArray length not 2, got " + cycleArrows[j].length +
+                              ": " + cycleArrows[j]);
                         return;
                     }
-                    var splitArray = cycleArrowsSplitArray[0].split(/\.|:/);
+
+                    var src_pathname = sys_pathnames[cycleArrows[j][0]];
+                    var tgt_pathname = sys_pathnames[cycleArrows[j][1]];
+
+                    var splitArray = src_pathname.split(/\.|:/);
                     var arrowBeginObj = GetObjectInTree(root, splitArray, 0);
                     if (arrowBeginObj == null) {
-                        alert("error: cannot find cycle arrows begin object " + cycleArrowsSplitArray[0]);
+                        alert("error: cannot find cycle arrows begin object " + src_pathname);
                         return;
                     }
-                    splitArray = cycleArrowsSplitArray[1].split(/\.|:/);
+                    splitArray = tgt_pathname.split(/\.|:/);
                     var arrowEndObj = GetObjectInTree(root, splitArray, 0);
                     if (arrowEndObj == null) {
-                        alert("error: cannot find cycle arrows end object " + cycleArrowsSplitArray[1]);
+                        alert("error: cannot find cycle arrows end object " + tgt_pathname);
                         return;
                     }
                     cycleArrowsArray.push({ "begin": arrowBeginObj, "end": arrowEndObj });
@@ -1026,7 +1313,6 @@ function PtN2Diagram(parentDiv, modelData) {
             }
 
         }
-        RemoveDuplicates(root);
     }
 
     function ComputeMatrixN2() {
@@ -1036,8 +1322,7 @@ function PtN2Diagram(parentDiv, modelData) {
                 var srcObj = d3RightTextNodesArrayZoomed[si];
                 matrix[si + "_" + si] = { "r": si, "c": si, "obj": srcObj, "id": srcObj.id + "_" + srcObj.id };
                 var targets = (showParams) ? srcObj.targetsParamView : srcObj.targetsHideParams;
-                for (var j = 0; j < targets.length; ++j) {
-                    var tgtObj = targets[j];
+                for (let tgtObj of targets) {
                     var ti = d3RightTextNodesArrayZoomed.indexOf(tgtObj);
                     if (ti != -1) {
                         matrix[si + "_" + ti] = { "r": si, "c": ti, "obj": srcObj, "id": srcObj.id + "_" + tgtObj.id }; //matrix[si][ti].z = 1;
@@ -1518,6 +1803,10 @@ function PtN2Diagram(parentDiv, modelData) {
             var newText = (i == height) ? ("<b>" + i + "px</b>") : (i + "px");
             parentDiv.querySelector("#idVerticalResize" + i + "px").innerHTML = newText;
         }
+        for (var i = 2000; i <= 4000; i += 1000) {
+            var newText = (i == height) ? ("<b>" + i + "px</b>") : (i + "px");
+            parentDiv.querySelector("#idVerticalResize" + i + "px").innerHTML = newText;
+        }
         ClearArrowsAndConnects();
         HEIGHT_PX = height;
         LEVEL_OF_DETAIL_THRESHOLD = HEIGHT_PX / 3;
@@ -1530,12 +1819,19 @@ function PtN2Diagram(parentDiv, modelData) {
     function ShowParamsCheckboxChange() {
         if (zoomedElement.type === "param" || zoomedElement.type === "unconnected_param") return;
         showParams = !showParams;
-        parentDiv.querySelector("#showParamsButtonId").className = showParams ? "myButton myButtonToggledOn" : "myButton";
+        parentDiv.querySelector("#showParamsButtonId").className = !showParams ? "myButton myButtonToggledOn" : "myButton";
 
         FindRootOfChangeFunction = FindRootOfChangeForShowParams;
         lastClickWasLeft = false;
         TRANSITION_DURATION = TRANSITION_DURATION_SLOW;
         transitionStartDelay = 500;
+        SetupLegend(d3, d3ContentDiv);
+        Update();
+    }
+
+    function ToggleSolverNamesCheckboxChange() {
+        showLinearSolverNames = !showLinearSolverNames;
+        parentDiv.querySelector("#toggleSolverNamesButtonId").className = !showLinearSolverNames ? "myButton myButtonToggledOn" : "myButton";
         SetupLegend(d3, d3ContentDiv);
         Update();
     }
@@ -1571,6 +1867,8 @@ function PtN2Diagram(parentDiv, modelData) {
         div.querySelector("#showLegendButtonId").onclick = ToggleLegend;
         div.querySelector("#showParamsButtonId").onclick = ShowParamsCheckboxChange;
 
+        div.querySelector("#toggleSolverNamesButtonId").onclick = ToggleSolverNamesCheckboxChange;
+
         for (var i = 8; i <= 14; ++i) {
             var f = function (idx) {
                 return function () { FontSizeSelectChange(idx); };
@@ -1580,6 +1878,12 @@ function PtN2Diagram(parentDiv, modelData) {
 
         for (var i = 600; i <= 1000; i += 50) {
             var f = function (idx) {
+                return function () { VerticalResize(idx); };
+            }(i);
+            div.querySelector("#idVerticalResize" + i + "px").onclick = f;
+        }
+        for (var i = 2000; i <= 4000; i += 1000) {
+            var f = function(idx) {
                 return function () { VerticalResize(idx); };
             }(i);
             div.querySelector("#idVerticalResize" + i + "px").onclick = f;
@@ -1605,5 +1909,16 @@ var mouseClickN2;
 var hasInputConn;
 var treeData, connectionList;
 modelData.tree.name = 'model'; //Change 'root' to 'model'
+function ChangeBlankSolverToNone(d) {
+    if (d.linear_solver === "") d.linear_solver = "None";
+    if (d.nonlinear_solver === "") d.nonlinear_solver = "None";
+    if (d.children) {
+        for (var i = 0; i < d.children.length; ++i) {
+            ChangeBlankSolverToNone(d.children[i]);
+        }
+    }
+}
+ChangeBlankSolverToNone(modelData.tree);
+
 var app = PtN2Diagram(document.getElementById("ptN2ContentDivId"), modelData);
 

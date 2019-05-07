@@ -56,7 +56,7 @@ class SellarDis1(ExplicitComponent):
         self.add_input('y2', val=1.0, units=units)
 
         # Coupling output
-        self.add_output('y1', val=1.0, units=units, ref=ref)
+        self.add_output('y1', val=1.0, lower=0.1, upper=1000., units=units, ref=ref)
 
         self._do_declares()
 
@@ -137,7 +137,7 @@ class SellarDis2(ExplicitComponent):
         self.add_input('y1', val=1.0, units=units)
 
         # Coupling output
-        self.add_output('y2', val=1.0, units=units, ref=ref)
+        self.add_output('y2', val=1.0, lower=0.1, upper=1000., units=units, ref=ref)
 
         self._do_declares()
 
@@ -182,6 +182,8 @@ class SellarDis2withDerivatives(SellarDis2):
         y1 = inputs['y1']
         if y1.real < 0.0:
             y1 *= -1
+        if y1.real < 1e-8:
+            y1 = 1e-8
 
         J['y2', 'y1'] = .5*y1**-.5
         J['y2', 'z'] = np.array([[1.0, 1.0]])
@@ -203,13 +205,13 @@ class SellarNoDerivatives(Group):
     """
 
     def initialize(self):
-        self.options.declare('nonlinear_solver', default=NonlinearBlockGS(),
+        self.options.declare('nonlinear_solver', default=NonlinearBlockGS,
                              desc='Nonlinear solver for Sellar MDA')
         self.options.declare('nl_atol', default=None,
                              desc='User-specified atol for nonlinear solver.')
         self.options.declare('nl_maxiter', default=None,
                              desc='Iteration limit for nonlinear solver.')
-        self.options.declare('linear_solver', default=ScipyKrylov(),
+        self.options.declare('linear_solver', default=ScipyKrylov,
                              desc='Linear solver')
         self.options.declare('ln_atol', default=None,
                              desc='User-specified atol for linear solver.')
@@ -225,22 +227,22 @@ class SellarNoDerivatives(Group):
         cycle.add_subsystem('d2', SellarDis2(), promotes=['z', 'y1', 'y2'])
 
         self.add_subsystem('obj_cmp', ExecComp('obj = x**2 + z[1] + y1 + exp(-y2)',
-                           z=np.array([0.0, 0.0]), x=0.0),
+                                               z=np.array([0.0, 0.0]), x=0.0),
                            promotes=['x', 'z', 'y1', 'y2', 'obj'])
 
         self.add_subsystem('con_cmp1', ExecComp('con1 = 3.16 - y1'), promotes=['con1', 'y1'])
         self.add_subsystem('con_cmp2', ExecComp('con2 = y2 - 24.0'), promotes=['con2', 'y2'])
 
-        self.nonlinear_solver = NonlinearBlockGS()
-
-        self.nonlinear_solver = self.options['nonlinear_solver']
+        nl = self.options['nonlinear_solver']
+        self.nonlinear_solver = nl() if inspect.isclass(nl) else nl
         if self.options['nl_atol']:
             self.nonlinear_solver.options['atol'] = self.options['nl_atol']
         if self.options['nl_maxiter']:
             self.nonlinear_solver.options['maxiter'] = self.options['nl_maxiter']
 
     def configure(self):
-        self.cycle.linear_solver = self.options['linear_solver']
+        ln = self.options['linear_solver']
+        self.cycle.linear_solver = ln() if inspect.isclass(ln) else ln
         if self.options['ln_atol']:
             self.cycle.linear_solver.options['atol'] = self.options['ln_atol']
         if self.options['ln_maxiter']:
@@ -273,12 +275,14 @@ class SellarDerivatives(Group):
         self.add_subsystem('d1', SellarDis1withDerivatives(), promotes=['x', 'z', 'y1', 'y2'])
         self.add_subsystem('d2', SellarDis2withDerivatives(), promotes=['z', 'y1', 'y2'])
 
-        self.add_subsystem('obj_cmp', ExecComp('obj = x**2 + z[1] + y1 + exp(-y2)',
-                           z=np.array([0.0, 0.0]), x=0.0),
+        self.add_subsystem('obj_cmp', ExecComp('obj = x**2 + z[1] + y1 + exp(-y2)', obj=0.0,
+                                               x=0.0, z=np.array([0.0, 0.0]), y1=0.0, y2=0.0),
                            promotes=['obj', 'x', 'z', 'y1', 'y2'])
 
-        self.add_subsystem('con_cmp1', ExecComp('con1 = 3.16 - y1'), promotes=['con1', 'y1'])
-        self.add_subsystem('con_cmp2', ExecComp('con2 = y2 - 24.0'), promotes=['con2', 'y2'])
+        self.add_subsystem('con_cmp1', ExecComp('con1 = 3.16 - y1', con1=0.0, y1=0.0),
+                           promotes=['con1', 'y1'])
+        self.add_subsystem('con_cmp2', ExecComp('con2 = y2 - 24.0', con2=0.0, y2=0.0),
+                           promotes=['con2', 'y2'])
 
         nl = self.options['nonlinear_solver']
         self.nonlinear_solver = nl() if inspect.isclass(nl) else nl
@@ -308,7 +312,7 @@ class SellarDerivativesConnected(Group):
         self.add_subsystem('d2', SellarDis2withDerivatives())
 
         self.add_subsystem('obj_cmp', ExecComp('obj = x**2 + z[1] + y1 + exp(-y2)',
-                           z=np.array([0.0, 0.0]), x=0.0))
+                                               z=np.array([0.0, 0.0]), x=0.0))
 
         self.add_subsystem('con_cmp1', ExecComp('con1 = 3.16 - y1'))
         self.add_subsystem('con_cmp2', ExecComp('con2 = y2 - 24.0'))
@@ -513,7 +517,7 @@ class SellarImplicitDis1(ImplicitComponent):
         self.add_input('y2', val=1.0, units=units)
 
         # Coupling output
-        self.add_output('y1', val=1.0, units=units, ref=ref)
+        self.add_output('y1', val=1.0, lower=-0.1, upper=1000, units=units, ref=ref)
 
         # Derivatives
         self.declare_partials('*', '*')
@@ -572,7 +576,7 @@ class SellarImplicitDis2(ImplicitComponent):
         self.add_input('y1', val=1.0, units=units)
 
         # Coupling output
-        self.add_output('y2', val=1.0, units=units, ref=ref)
+        self.add_output('y2', val=1.0, lower=0.1, upper=1000., units=units, ref=ref)
 
         # Derivatives
         self.declare_partials('*', '*')
@@ -604,6 +608,8 @@ class SellarImplicitDis2(ImplicitComponent):
         y1 = inputs['y1']
         if y1.real < 0.0:
             y1 *= -1
+        if y1.real < 1e-8:
+            y1 = 1e-8
 
         J['y2', 'y1'] = -.5*y1**-.5
         J['y2', 'z'] = -np.array([[1.0, 1.0]])
@@ -614,6 +620,7 @@ class SellarProblem(Problem):
     """
     The Sellar problem with configurable model class.
     """
+
     def __init__(self, model_class=SellarDerivatives, **kwargs):
         super(SellarProblem, self).__init__(model_class(**kwargs))
 

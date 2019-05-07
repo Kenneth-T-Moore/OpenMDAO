@@ -2,9 +2,10 @@
 
 from __future__ import division
 
-from collections import OrderedDict, Iterable
+from collections import OrderedDict, Iterable, Counter
 from itertools import product
-from six import string_types, iteritems, itervalues
+from six import string_types, iteritems
+import copy
 
 import numpy as np
 from numpy import ndarray, isscalar, atleast_1d, atleast_2d, promote_types
@@ -17,9 +18,10 @@ from openmdao.jacobians.assembled_jacobian import SUBJAC_META_DEFAULTS
 from openmdao.jacobians.dictionary_jacobian import DictionaryJacobian
 from openmdao.utils.units import valid_units
 from openmdao.utils.general_utils import format_as_float_or_array, ensure_compatible, \
-    warn_deprecation, find_matches
+    warn_deprecation, find_matches, simple_warning
 from openmdao.vectors.vector import INT_DTYPE
 from openmdao.utils.name_maps import rel_key2abs_key, abs_key2rel_key
+from openmdao.utils.mpi import MPI
 
 
 # Suppored methods for derivatives
@@ -30,7 +32,7 @@ _supported_methods = {'fd': (FiniteDifference, DEFAULT_FD_OPTIONS),
 
 # the following metadata will be accessible for vars on all procs
 global_meta_names = {
-    'input': ('units', 'shape', 'size'),
+    'input': ('units', 'shape', 'size', 'distributed'),
     'output': ('units', 'shape', 'size',
                'ref', 'ref0', 'res_ref', 'distributed', 'lower', 'upper'),
 }
@@ -61,16 +63,13 @@ class Component(System):
 
     Attributes
     ----------
-    distributed : bool
-        This is True if the component has variables that are distributed across multiple
-        processes.
     _approx_schemes : OrderedDict
         A mapping of approximation types to the associated ApproximationScheme.
-    _var_rel2data_io : dict
-        Dictionary mapping relative names to dicts with keys (prom, rel, my_idx, type_, metadata).
+    _var_rel2meta : dict
+        Dictionary mapping relative names to metadata.
         This is only needed while adding inputs and outputs. During setup, these are used to
         build the dictionaries of metadata.
-    _static_var_rel2data_io : dict
+    _static_var_rel2meta : dict
         Static version of above - stores data for variables added outside of setup.
     _var_rel_names : {'input': [str, ...], 'output': [str, ...]}
         List of relative names of owned variables existing on current proc.
@@ -95,23 +94,57 @@ class Component(System):
         **kwargs : dict of keyword arguments
             available here and in all descendants of this system.
         """
-        # put these here to prevent them from possibly overriding values set
-        # by the user in initialize().
-        self.distributed = False
-
         super(Component, self).__init__(**kwargs)
 
         self._approx_schemes = OrderedDict()
 
         self._var_rel_names = {'input': [], 'output': []}
-        self._var_rel2data_io = {}
+        self._var_rel2meta = {}
 
         self._static_var_rel_names = {'input': [], 'output': []}
-        self._static_var_rel2data_io = {}
+        self._static_var_rel2meta = {}
 
         self._declared_partials = []
         self._approximated_partials = []
         self._declared_partial_checks = []
+
+    def _declare_options(self):
+        """
+        Declare options before kwargs are processed in the init method.
+        """
+        super(Component, self)._declare_options()
+
+        self.options.declare('distributed', types=bool, default=False,
+                             desc='True if the component has variables that are distributed '
+                                  'across multiple processes.')
+
+    @property
+    def distributed(self):
+        """
+        Provide 'distributed' property for backwards compatibility.
+
+        Returns
+        -------
+        bool
+            reference to the 'distributed' option.
+        """
+        warn_deprecation("The 'distributed' property provides backwards compatibility "
+                         "with OpenMDAO <= 2.4.0 ; use the 'distributed' option instead.")
+        return self.options['distributed']
+
+    @distributed.setter
+    def distributed(self, val):
+        """
+        Provide for setting of the 'distributed' property for backwards compatibility.
+
+        Parameters
+        ----------
+        val : bool
+            True if the component has variables that are distributed across multiple processes.
+        """
+        warn_deprecation("The 'distributed' property provides backwards compatibility "
+                         "with OpenMDAO <= 2.4.0 ; use the 'distributed' option instead.")
+        self.options['distributed'] = val
 
     def setup(self):
         """
@@ -142,50 +175,56 @@ class Component(System):
             reverse (adjoint). Default is 'rev'.
         """
         self.pathname = pathname
+
+        orig_comm = comm
+        if self._num_par_fd > 1:
+            if comm.size > 1:
+                comm = self._setup_par_fd_procs(comm)
+            elif not MPI:
+                msg = ("'%s': MPI is not active but num_par_fd = %d. No parallel finite difference "
+                       "will be performed." % (self.pathname, self._num_par_fd))
+                simple_warning(msg)
+
         self.comm = comm
         self._mode = mode
         self._subsystems_proc_range = []
 
         # Clear out old variable information so that we can call setup on the component.
         self._var_rel_names = {'input': [], 'output': []}
-        self._var_rel2data_io = {}
+        self._var_rel2meta = {}
         self._design_vars = OrderedDict()
         self._responses = OrderedDict()
 
         self._static_mode = False
-        self._var_rel2data_io.update(self._static_var_rel2data_io)
+        self._var_rel2meta.update(self._static_var_rel2meta)
         for type_ in ['input', 'output']:
             self._var_rel_names[type_].extend(self._static_var_rel_names[type_])
         self._design_vars.update(self._static_design_vars)
         self._responses.update(self._static_responses)
         self.setup()
+
+        # check to make sure that if num_par_fd > 1 that this system is actually doing FD.
+        # Unfortunately we have to do this check after system setup has been called because that's
+        # when declare_partials generally happens, so we raise an exception here instead of just
+        # resetting the value of num_par_fd (because the comm has already been split and possibly
+        # used by the system setup).
+        if self._num_par_fd > 1 and orig_comm.size > 1 and not (self._owns_approx_jac or
+                                                                self._approximated_partials):
+            raise RuntimeError("'%s': num_par_fd is > 1 but no FD is active." % self.pathname)
+
         self._static_mode = True
 
-        if self.distributed:
-            self._vector_class = self._distributed_vector_class
+        if self.options['distributed']:
+            if self._distributed_vector_class is not None:
+                self._vector_class = self._distributed_vector_class
+            else:
+                simple_warning("The 'distributed' option is set to True for Component %s, "
+                               "but there is no distributed vector implementation (MPI/PETSc) "
+                               "available. The default non-distributed vectors will be used."
+                               % pathname)
+                self._vector_class = self._local_vector_class
         else:
             self._vector_class = self._local_vector_class
-
-    def _setup_vars(self, recurse=True):
-        """
-        Count total variables.
-
-        Parameters
-        ----------
-        recurse : bool
-            Whether to call this method in subsystems.
-        """
-        super(Component, self)._setup_vars()
-        num_var = self._num_var
-
-        for vec_name in self._lin_rel_vec_name_list:
-            num_var[vec_name] = {}
-            # Compute num_var
-            for type_ in ['input', 'output']:
-                relnames = self._var_allprocs_relevant_names[vec_name][type_]
-                num_var[vec_name][type_] = len(relnames)
-
-        self._num_var['nonlinear'] = self._num_var['linear']
 
     def _setup_var_data(self, recurse=True):
         """
@@ -199,26 +238,21 @@ class Component(System):
         global global_meta_names
         super(Component, self)._setup_var_data()
         allprocs_abs_names = self._var_allprocs_abs_names
-        abs_names = self._var_abs_names
         allprocs_prom2abs_list = self._var_allprocs_prom2abs_list
         abs2prom = self._var_abs2prom
         allprocs_abs2meta = self._var_allprocs_abs2meta
         abs2meta = self._var_abs2meta
 
         # Compute the prefix for turning rel/prom names into abs names
-        if self.pathname:
-            prefix = self.pathname + '.'
-        else:
-            prefix = ''
+        prefix = self.pathname + '.' if self.pathname else ''
 
         for type_ in ['input', 'output']:
             for prom_name in self._var_rel_names[type_]:
                 abs_name = prefix + prom_name
-                metadata = self._var_rel2data_io[prom_name]['metadata']
+                metadata = self._var_rel2meta[prom_name]
 
                 # Compute allprocs_abs_names, abs_names
                 allprocs_abs_names[type_].append(abs_name)
-                abs_names[type_].append(abs_name)
 
                 # Compute allprocs_prom2abs_list, abs2prom
                 allprocs_prom2abs_list[type_][prom_name] = [abs_name]
@@ -233,6 +267,18 @@ class Component(System):
                 # Compute abs2meta
                 abs2meta[abs_name] = metadata
 
+            for prom_name, val in iteritems(self._var_discrete[type_]):
+                abs_name = prefix + prom_name
+                allprocs_prom2abs_list[type_][prom_name] = [abs_name]
+                self._var_allprocs_discrete[type_][abs_name] = val
+
+        self._var_abs_names = self._var_allprocs_abs_names
+        if self._var_discrete['input'] or self._var_discrete['output']:
+            self._discrete_inputs = _DictValues(self._var_discrete['input'])
+            self._discrete_outputs = _DictValues(self._var_discrete['output'])
+        else:
+            self._discrete_inputs = self._discrete_outputs = ()
+
     def _setup_var_sizes(self, recurse=True):
         """
         Compute the arrays of local variable sizes for all variables/procs on this system.
@@ -246,31 +292,48 @@ class Component(System):
 
         iproc = self.comm.rank
         nproc = self.comm.size
-        vec_names = self._lin_rel_vec_name_list
 
         sizes = self._var_sizes
+        abs2meta = self._var_abs2meta
+
+        if self._use_derivatives:
+            vec_names = self._lin_rel_vec_name_list
+        else:
+            vec_names = self._vec_names
 
         # Initialize empty arrays
         for vec_name in vec_names:
+            # at component level, _var_allprocs_* is the same as var_* since all vars exist in all
+            # procs for a given component, so we don't have to mess with figuring out what vars are
+            # local.
+            if self._use_derivatives:
+                relnames = self._var_allprocs_relevant_names[vec_name]
+            else:
+                relnames = self._var_allprocs_abs_names
+
             sizes[vec_name] = {}
-
             for type_ in ('input', 'output'):
-                sizes[vec_name][type_] = np.zeros((nproc, self._num_var[vec_name][type_]), int)
+                sizes[vec_name][type_] = sz = np.zeros((nproc, len(relnames[type_])), int)
 
-            # Compute _var_sizes
-            abs2meta = self._var_abs2meta
-            for type_ in ('input', 'output'):
-                sz = sizes[vec_name][type_]
-                for idx, abs_name in enumerate(self._var_allprocs_relevant_names[vec_name][type_]):
+                # Compute _var_sizes
+                for idx, abs_name in enumerate(relnames[type_]):
                     sz[iproc, idx] = abs2meta[abs_name]['size']
 
-        if self.comm.size > 1:
+        if nproc > 1:
             for vec_name in vec_names:
                 sizes = self._var_sizes[vec_name]
-                for type_ in ['input', 'output']:
-                    self.comm.Allgather(sizes[type_][iproc, :], sizes[type_])
+                if self.options['distributed']:
+                    for type_ in ['input', 'output']:
+                        sizes_in = copy.deepcopy(sizes[type_][iproc, :])
+                        self.comm.Allgather(sizes_in, sizes[type_])
+                else:
+                    # if component isn't distributed, we don't need to allgather sizes since
+                    # they'll all be the same.
+                    for type_ in ['input', 'output']:
+                        sizes[type_] = np.tile(sizes[type_][iproc], (nproc, 1))
 
-        self._var_sizes['nonlinear'] = self._var_sizes['linear']
+        if self._use_derivatives:
+            self._var_sizes['nonlinear'] = self._var_sizes['linear']
 
         self._setup_global_shapes()
 
@@ -373,27 +436,67 @@ class Component(System):
 
         metadata['units'] = units
         metadata['desc'] = desc
+        metadata['distributed'] = self.options['distributed']
 
         # We may not know the pathname yet, so we have to use name for now, instead of abs_name.
         if self._static_mode:
-            var_rel2data_io = self._static_var_rel2data_io
+            var_rel2meta = self._static_var_rel2meta
             var_rel_names = self._static_var_rel_names
         else:
-            var_rel2data_io = self._var_rel2data_io
+            var_rel2meta = self._var_rel2meta
             var_rel_names = self._var_rel_names
 
         # Disallow dupes
-        if name in var_rel2data_io:
+        if name in var_rel2meta:
             msg = "Variable name '{}' already exists.".format(name)
             raise ValueError(msg)
 
-        var_rel2data_io[name] = {
-            'prom': name, 'rel': name,
-            'my_idx': len(self._var_rel_names['input']),
-            'type': 'input',
-            'metadata': metadata
-        }
+        var_rel2meta[name] = metadata
         var_rel_names['input'].append(name)
+
+        return metadata
+
+    def add_discrete_input(self, name, val, desc=''):
+        """
+        Add a discrete input variable to the component.
+
+        Parameters
+        ----------
+        name : str
+            name of the variable in this component's namespace.
+        val : a picklable object
+            The initial value of the variable being added.
+        desc : str
+            description of the variable
+
+        Returns
+        -------
+        dict
+            metadata for added variable
+        """
+        # First, type check all arguments
+        if not isinstance(name, str):
+            raise TypeError('The name argument should be a string')
+        if not _valid_var_name(name):
+            raise NameError("'%s' is not a valid input name." % name)
+
+        metadata = {
+            'value': val,
+            'type': type(val),
+            'desc': desc,
+        }
+
+        if self._static_mode:
+            var_rel2meta = self._static_var_rel2meta
+        else:
+            var_rel2meta = self._var_rel2meta
+
+        # Disallow dupes
+        if name in var_rel2meta:
+            msg = "Variable name '{}' already exists.".format(name)
+            raise ValueError(msg)
+
+        var_rel2meta[name] = self._var_discrete['input'][name] = metadata
 
         return metadata
 
@@ -453,7 +556,6 @@ class Component(System):
                              name)
             units = None
 
-        # First, type check all arguments
         if not isinstance(name, str):
             raise TypeError('The name argument should be a string')
         if not _valid_var_name(name):
@@ -536,28 +638,66 @@ class Component(System):
         metadata['ref0'] = ref0
         metadata['res_ref'] = res_ref
 
-        metadata['distributed'] = self.distributed
+        metadata['distributed'] = self.options['distributed']
 
         # We may not know the pathname yet, so we have to use name for now, instead of abs_name.
         if self._static_mode:
-            var_rel2data_io = self._static_var_rel2data_io
+            var_rel2meta = self._static_var_rel2meta
             var_rel_names = self._static_var_rel_names
         else:
-            var_rel2data_io = self._var_rel2data_io
+            var_rel2meta = self._var_rel2meta
             var_rel_names = self._var_rel_names
 
         # Disallow dupes
-        if name in var_rel2data_io:
+        if name in var_rel2meta:
             msg = "Variable name '{}' already exists.".format(name)
             raise ValueError(msg)
 
-        var_rel2data_io[name] = {
-            'prom': name, 'rel': name,
-            'my_idx': len(self._var_rel_names['output']),
-            'type': 'output',
-            'metadata': metadata
-        }
+        var_rel2meta[name] = metadata
         var_rel_names['output'].append(name)
+
+        return metadata
+
+    def add_discrete_output(self, name, val, desc=''):
+        """
+        Add an output variable to the component.
+
+        Parameters
+        ----------
+        name : str
+            name of the variable in this component's namespace.
+        val : a picklable object
+            The initial value of the variable being added.
+        desc : str
+            description of the variable.
+
+        Returns
+        -------
+        dict
+            metadata for added variable
+        """
+        if not isinstance(name, str):
+            raise TypeError('The name argument should be a string')
+        if not _valid_var_name(name):
+            raise NameError("'%s' is not a valid output name." % name)
+
+        metadata = {
+            'value': val,
+            'type': type(val),
+            'desc': desc
+        }
+
+        if self._static_mode:
+            var_rel2meta = self._static_var_rel2meta
+        else:
+            var_rel2meta = self._var_rel2meta
+
+        # Disallow dupes
+        if name in var_rel2meta:
+            msg = "Variable name '{}' already exists.".format(name)
+            raise ValueError(msg)
+
+        var_rel2meta[name] = self._var_discrete['output'][name] = metadata
 
         return metadata
 
@@ -659,6 +799,24 @@ class Component(System):
             if (rows is None) ^ (cols is None):
                 raise ValueError('If one of rows/cols is specified, then both must be specified')
 
+            if rows is not None:
+
+                # First, check the length of rows and cols to catch this easy mistake and give a
+                # clear message.
+                if len(cols) != len(rows):
+                    msg = "{0}: declare_partials has been called with rows and cols, which" + \
+                          " should be arrays of equal length, but rows is length {1} while " + \
+                          "cols is length {2}."
+                    raise RuntimeError(msg.format(self.pathname, len(rows), len(cols)))
+
+                # Check for repeated rows/cols indices.
+                idxset = set(zip(rows, cols))
+                if len(rows) - len(idxset) > 0:
+                    dups = [n for n, val in iteritems(Counter(zip(rows, cols))) if val > 1]
+                    raise RuntimeError("%s: declare_partials has been called with rows and cols "
+                                       "that specify the following duplicate subjacobian entries: "
+                                       "%s." % (self.pathname, sorted(dups)))
+
             self._declared_partials.append((of, wrt, dependent, rows, cols, val))
 
         # Approximation of the derivative, former API call approx_partials.
@@ -693,7 +851,8 @@ class Component(System):
 
             self._approximated_partials.append((of, wrt, method, kwargs))
 
-    def set_check_partial_options(self, wrt, method='fd', form=None, step=None, step_calc=None):
+    def set_check_partial_options(self, wrt, method='fd', form=None, step=None, step_calc=None,
+                                  directional=False):
         """
         Set options that will be used for checking partial derivatives.
 
@@ -714,6 +873,9 @@ class Component(System):
         step_calc : str
             Type of step calculation for check, can be "abs" for absolute (default) or "rel" for
             relative.  Leave undeclared to keep unchanged from previous or default value.
+        directional : bool
+            Set to True to perform a single directional derivative for each vector variable in the
+            pattern named in wrt.
         """
         supported_methods = ('fd', 'cs')
         if method not in supported_methods:
@@ -734,8 +896,14 @@ class Component(System):
                   "of '{}' was provided."
             raise ValueError(msg.format(type(wrt).__name__))
 
+        if not isinstance(directional, bool):
+            msg = "The value of 'directional' must be True or False, but a type " \
+                  "of '{}' was provided."
+            raise ValueError(msg.format(type(directional).__name__))
+
         wrt_list = [wrt] if isinstance(wrt, string_types) else wrt
-        self._declared_partial_checks.append((wrt_list, method, form, step, step_calc))
+        self._declared_partial_checks.append((wrt_list, method, form, step, step_calc,
+                                              directional))
 
     def _get_check_partial_options(self):
         """
@@ -749,14 +917,12 @@ class Component(System):
             Dictionary keyed by name with tuples of options (method, form, step, step_calc)
         """
         opts = {}
-        outs = list(self._var_allprocs_prom2abs_list['output'].keys())
-        ins = list(self._var_allprocs_prom2abs_list['input'].keys())
-
+        of, wrt = self._get_potential_partials_lists()
         invalid_wrt = []
 
-        for wrt_list, method, form, step, step_calc in self._declared_partial_checks:
+        for wrt_list, method, form, step, step_calc, directional in self._declared_partial_checks:
             for pattern in wrt_list:
-                matches = find_matches(pattern, outs + ins)
+                matches = find_matches(pattern, wrt)
 
                 # if a non-wildcard var name was specified and not found, save for later Exception
                 if len(matches) == 0 and _valid_var_name(pattern):
@@ -767,8 +933,9 @@ class Component(System):
                         opt = opts[match]
 
                         # New assignments take precedence
-                        for name, value in zip(['method', 'form', 'step', 'step_calc'],
-                                               [method, form, step, step_calc]):
+                        keynames = ['method', 'form', 'step', 'step_calc', 'directional']
+                        for name, value in zip(keynames,
+                                               [method, form, step, step_calc, directional]):
                             if value is not None:
                                 opt[name] = value
 
@@ -776,7 +943,8 @@ class Component(System):
                         opts[match] = {'method': method,
                                        'form': form,
                                        'step': step,
-                                       'step_calc': step_calc}
+                                       'step_calc': step_calc,
+                                       'directional': directional}
 
         if invalid_wrt:
             if len(invalid_wrt) == 1:
@@ -854,11 +1022,9 @@ class Component(System):
 
                 if rows.size > 0:
                     if rows.min() < 0:
-                        # of, wrt = abs_key2rel_key(self, abs_key)
                         msg = '{}: d({})/d({}): row indices must be non-negative'
                         raise ValueError(msg.format(self.pathname, of, wrt))
                     if cols.min() < 0:
-                        # of, wrt = abs_key2rel_key(self, abs_key)
                         msg = '{}: d({})/d({}): col indices must be non-negative'
                         raise ValueError(msg.format(self.pathname, of, wrt))
                     rows_max = rows.max()
@@ -942,11 +1108,10 @@ class Component(System):
         """
         of_list = [of] if isinstance(of, string_types) else of
         wrt_list = [wrt] if isinstance(wrt, string_types) else wrt
-        outs = list(self._var_allprocs_prom2abs_list['output'])
-        ins = list(self._var_allprocs_prom2abs_list['input'])
+        of, wrt = self._get_potential_partials_lists()
 
-        of_pattern_matches = [(pattern, find_matches(pattern, outs)) for pattern in of_list]
-        wrt_pattern_matches = [(pattern, find_matches(pattern, outs + ins)) for pattern in wrt_list]
+        of_pattern_matches = [(pattern, find_matches(pattern, of)) for pattern in of_list]
+        wrt_pattern_matches = [(pattern, find_matches(pattern, wrt)) for pattern in wrt_list]
         return of_pattern_matches, wrt_pattern_matches
 
     def _check_partials_meta(self, abs_key, val, shape):
@@ -990,9 +1155,6 @@ class Component(System):
                 if method is not None and method in self._approx_schemes:
                     self._approx_schemes[method].add_approximation(key, meta)
 
-        for approx in itervalues(self._approx_schemes):
-            approx._init_approximations()
-
     def _guess_nonlinear(self):
         """
         Provide initial guess for states.
@@ -1008,3 +1170,24 @@ class Component(System):
         Components don't have nested solvers, so do nothing to prevent errors.
         """
         pass
+
+
+class _DictValues(object):
+    """
+    A dict-like wrapper for a dict of metadata, where getitem returns 'value' from metadata.
+    """
+
+    def __init__(self, dct):
+        self._dict = dct
+
+    def __getitem__(self, key):
+        return self._dict[key]['value']
+
+    def __setitem__(self, key, value):
+        self._dict[key]['value'] = value
+
+    def __contains__(self, key):
+        return key in self._dict
+
+    def __len__(self):
+        return len(self._dict)

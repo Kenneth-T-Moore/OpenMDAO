@@ -4,12 +4,10 @@ from __future__ import division, print_function
 
 from six import iteritems
 import unittest
-import warnings
 
 import numpy as np
 
-from openmdao.api import Group, IndepVarComp, Problem, ExecComp, NonlinearBlockGS
-from openmdao.utils.assert_utils import assert_rel_error
+from openmdao.api import Group, IndepVarComp, Problem, ExecComp, NonlinearBlockGS, BoundsEnforceLS
 from openmdao.solvers.linear.linear_block_gs import LinearBlockGS
 from openmdao.solvers.linear.scipy_iter_solver import ScipyKrylov, ScipyIterativeSolver
 from openmdao.solvers.nonlinear.newton import NewtonSolver
@@ -18,6 +16,7 @@ from openmdao.test_suite.components.expl_comp_simple import TestExplCompSimpleDe
 from openmdao.test_suite.components.misc_components import Comp4LinearCacheTest
 from openmdao.test_suite.components.sellar import SellarDis1withDerivatives, SellarDis2withDerivatives
 from openmdao.test_suite.groups.implicit_group import TestImplicitGroup
+from openmdao.utils.assert_utils import assert_rel_error, assert_warning
 
 
 # use this to fake out the TestImplicitGroup so it'll use the solver we want.
@@ -45,12 +44,10 @@ class TestScipyKrylov(LinearSolverTests.LinearSolverTestCase):
 
         # use ScipyIterativeSolver here to check for deprecation warning and verify that the deprecated
         # class still gets the right answer without duplicating this test.
-        with warnings.catch_warnings(record=True) as w:
-            group = TestImplicitGroup(lnSolverClass=lambda : ScipyIterativeSolver(solver=self.linear_solver_name))
+        msg = "ScipyIterativeSolver is deprecated.  Use ScipyKrylov instead."
 
-        self.assertEqual(len(w), 1)
-        self.assertTrue(issubclass(w[0].category, DeprecationWarning))
-        self.assertEqual(str(w[0].message), "ScipyIterativeSolver is deprecated.  Use ScipyKrylov instead.")
+        with assert_warning(DeprecationWarning, msg):
+            group = TestImplicitGroup(lnSolverClass=lambda : ScipyIterativeSolver(solver=self.linear_solver_name))
 
         p = Problem(group)
         p.setup(check=False)
@@ -151,21 +148,12 @@ class TestScipyKrylov(LinearSolverTests.LinearSolverTestCase):
         msg = "The 'preconditioner' property provides backwards compatibility " \
             + "with OpenMDAO <= 1.x ; use 'precon' instead."
 
-        # check deprecation on setter
-        with warnings.catch_warnings(record=True) as w:
+        # check deprecation on setter & getter
+        with assert_warning(DeprecationWarning, msg):
             group.linear_solver.preconditioner = LinearBlockGS()
 
-        self.assertEqual(len(w), 1)
-        self.assertTrue(issubclass(w[0].category, DeprecationWarning))
-        self.assertEqual(str(w[0].message), msg)
-
-        # check deprecation on getter
-        with warnings.catch_warnings(record=True) as w:
+        with assert_warning(DeprecationWarning, msg):
             group.linear_solver.preconditioner
-
-        self.assertEqual(len(w), 1)
-        self.assertTrue(issubclass(w[0].category, DeprecationWarning))
-        self.assertEqual(str(w[0].message), msg)
 
     def test_linear_solution_cache(self):
         # Test derivatives across a converged Sellar model. When caching
@@ -369,38 +357,42 @@ class TestScipyKrylovFeature(unittest.TestCase):
     def test_specify_precon(self):
         import numpy as np
 
-        from openmdao.api import Problem, Group, IndepVarComp, ScipyKrylov, NewtonSolver, \
-             LinearBlockGS, ExecComp
-        from openmdao.test_suite.components.sellar import SellarDis1withDerivatives, \
-             SellarDis2withDerivatives
+        from openmdao.api import Problem, Group, ScipyKrylov, NewtonSolver, LinearBlockGS, \
+             DirectSolver, ExecComp, PETScKrylov
+
+        from openmdao.test_suite.components.quad_implicit import QuadraticComp
 
         prob = Problem()
         model = prob.model
 
-        model.add_subsystem('px', IndepVarComp('x', 1.0), promotes=['x'])
-        model.add_subsystem('pz', IndepVarComp('z', np.array([5.0, 2.0])), promotes=['z'])
+        sub1 = model.add_subsystem('sub1', Group())
+        sub1.add_subsystem('q1', QuadraticComp())
+        sub1.add_subsystem('z1', ExecComp('y = -6.0 + .01 * x'))
+        sub2 = model.add_subsystem('sub2', Group())
+        sub2.add_subsystem('q2', QuadraticComp())
+        sub2.add_subsystem('z2', ExecComp('y = -6.0 + .01 * x'))
 
-        model.add_subsystem('d1', SellarDis1withDerivatives(), promotes=['x', 'z', 'y1', 'y2'])
-        model.add_subsystem('d2', SellarDis2withDerivatives(), promotes=['z', 'y1', 'y2'])
-
-        model.add_subsystem('obj_cmp', ExecComp('obj = x**2 + z[1] + y1 + exp(-y2)',
-                                                z=np.array([0.0, 0.0]), x=0.0),
-                            promotes=['obj', 'x', 'z', 'y1', 'y2'])
-
-        model.add_subsystem('con_cmp1', ExecComp('con1 = 3.16 - y1'), promotes=['con1', 'y1'])
-        model.add_subsystem('con_cmp2', ExecComp('con2 = y2 - 24.0'), promotes=['con2', 'y2'])
+        model.connect('sub1.q1.x', 'sub1.z1.x')
+        model.connect('sub1.z1.y', 'sub2.q2.c')
+        model.connect('sub2.q2.x', 'sub2.z2.x')
+        model.connect('sub2.z2.y', 'sub1.q1.c')
 
         model.nonlinear_solver = NewtonSolver()
         model.linear_solver = ScipyKrylov()
 
-        model.linear_solver.precon = LinearBlockGS()
-        model.linear_solver.precon.options['maxiter'] = 2
-
         prob.setup()
+
+        model.sub1.linear_solver = DirectSolver()
+        model.sub2.linear_solver = DirectSolver()
+
+        model.linear_solver.precon = LinearBlockGS()
+
+        prob.set_solver_print(level=2)
         prob.run_model()
 
-        assert_rel_error(self, prob['y1'], 25.58830273, .00001)
-        assert_rel_error(self, prob['y2'], 12.05848819, .00001)
+        assert_rel_error(self, prob['sub1.q1.x'], 1.996, .0001)
+        assert_rel_error(self, prob['sub2.q2.x'], 1.996, .0001)
+
 
 if __name__ == "__main__":
     unittest.main()

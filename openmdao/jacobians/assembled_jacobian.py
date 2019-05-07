@@ -4,7 +4,7 @@ from __future__ import division, print_function
 import sys
 from collections import defaultdict
 
-from six import iteritems
+from six import iteritems, itervalues
 
 import numpy as np
 
@@ -14,6 +14,7 @@ from openmdao.matrices.coo_matrix import COOMatrix
 from openmdao.matrices.csr_matrix import CSRMatrix
 from openmdao.matrices.csc_matrix import CSCMatrix
 from openmdao.utils.units import get_conversion
+from openmdao.utils.array_utils import _flatten_src_indices
 
 SUBJAC_META_DEFAULTS = {
     'rows': None,
@@ -52,6 +53,9 @@ class AssembledJacobian(Jacobian):
         Column ranges for inputs.
     _out_ranges : dict
         Row ranges for outputs.
+    _has_overlapping_partials : bool
+        If True, this jacobian contains subjacobians that overlap, which happens when a single
+        source connects to multiple inputs on the same component.
     """
 
     def __init__(self, matrix_class, system):
@@ -78,16 +82,20 @@ class AssembledJacobian(Jacobian):
         self._matrix_class = matrix_class
         self._in_ranges = None
         self._out_ranges = None
+        self._has_overlapping_partials = False
 
         self._subjac_iters = defaultdict(lambda: None)
-        self._init_ranges()
+        self._init_ranges(system)
 
-    def _init_ranges(self):
+    def _init_ranges(self, system):
         """
         Compute row/col ranges for variables of the owning system.
-        """
-        system = self._system
 
+        Parameters
+        ----------
+        system : System
+            Parent system to this jacobian.
+        """
         iproc = system.comm.rank
         abs2idx = system._var_allprocs_abs2idx['nonlinear']
         sizes = system._var_sizes['nonlinear']['output']
@@ -106,16 +114,20 @@ class AssembledJacobian(Jacobian):
             in_ranges[name] = (start, end)
             start = end
 
-    def _initialize(self):
+    def _initialize(self, system):
         """
         Allocate the global matrices.
-        """
-        system = self._system
 
+        Parameters
+        ----------
+        system : System
+            Parent system to this jacobian.
+        """
         # var_indices are the *global* indices for variables on this proc
         is_top = system.pathname == ''
 
         abs2meta = system._var_abs2meta
+        all_meta = system._var_allprocs_abs2meta
 
         self._int_mtx = int_mtx = self._matrix_class(system.comm)
         ext_mtx = self._matrix_class(system.comm)
@@ -148,9 +160,11 @@ class AssembledJacobian(Jacobian):
             elif wrt_abs_name in in_ranges:
                 if wrt_abs_name in conns:  # connected input
                     out_abs_name = conns[wrt_abs_name]
+                    meta_in = abs2meta[wrt_abs_name]
+                    all_out_meta = all_meta[out_abs_name]
                     # calculate unit conversion
-                    in_units = abs2meta[wrt_abs_name]['units']
-                    out_units = abs2meta[out_abs_name]['units']
+                    in_units = meta_in['units']
+                    out_units = all_out_meta['units']
                     if in_units and out_units and in_units != out_units:
                         factor, _ = get_conversion(out_units, in_units)
                         if factor == 1.0:
@@ -170,7 +184,10 @@ class AssembledJacobian(Jacobian):
                         shape = info['shape']
                     else:
                         shape = abs_key2shape(abs_key2)
-
+                        if len(src_indices.shape) > 1:
+                            src_indices = _flatten_src_indices(src_indices, meta_in['shape'],
+                                                               all_out_meta['global_shape'],
+                                                               all_out_meta['global_size'])
                     int_mtx._add_submat(abs_key, info, res_offset, out_offset,
                                         src_indices, shape, factor)
 
@@ -225,15 +242,15 @@ class AssembledJacobian(Jacobian):
         ext_mtx = self._matrix_class(system.comm)
         conns = {} if isinstance(system, Component) else system._conn_global_abs_in2out
 
-        iproc = self._system.comm.rank
-        sizes = self._system._var_sizes['nonlinear']['input']
-        abs2idx = self._system._var_allprocs_abs2idx['nonlinear']
+        iproc = system.comm.rank
+        sizes = system._var_sizes['nonlinear']['input']
+        abs2idx = system._var_allprocs_abs2idx['nonlinear']
         in_offset = {n: np.sum(sizes[iproc, :abs2idx[n]]) for n in
                      system._var_abs_names['input'] if n not in conns}
 
         subjacs_info = self._subjacs_info
 
-        sizes = self._system._var_sizes['nonlinear']['output']
+        sizes = system._var_sizes['nonlinear']['output']
         for s in system.system_iter(recurse=True, include_self=True, typ=Component):
             for res_abs_name in s._var_abs_names['output']:
                 res_offset = np.sum(sizes[iproc, :abs2idx[res_abs_name]])
@@ -271,13 +288,13 @@ class AssembledJacobian(Jacobian):
             ext_mtx = self._ext_mtx[system.pathname]
             subjacs = system._subjacs_info
             seen = set()
+
             if isinstance(system, Component):
                 global_conns = _empty_dict
             else:
                 global_conns = system._conn_global_abs_in2out
 
             output_names = set(system._var_abs_names['output'])
-            input_names = set(system._var_abs_names['input'])
 
             rev_conns = defaultdict(list)
             for tgt, src in iteritems(global_conns):
@@ -294,7 +311,7 @@ class AssembledJacobian(Jacobian):
                 _, wrtname = abs_key
                 if wrtname in output_names:
                     if abs_key in int_mtx._submats:
-                        iters.append((abs_key, abs_key, False))
+                        iters.append(abs_key)
                     else:
                         # This happens when the src is an indepvarcomp that is
                         # contained in the system.
@@ -302,15 +319,16 @@ class AssembledJacobian(Jacobian):
                         if wrt in rev_conns:
                             for tgt in rev_conns[wrt]:
                                 if (of, tgt) in int_mtx._submats:
-                                    iters.append((of, tgt), abs_key, False)
+                                    iters.append(abs_key)
                                     break
                 else:  # wrt is an input
                     if wrtname in global_conns:
                         mapped = keymap[abs_key]
                         if mapped in seen:
-                            iters.append((mapped, abs_key, True))
+                            iters.append(abs_key)
+                            self._has_overlapping_partials = True
                         else:
-                            iters.append((mapped, abs_key, False))
+                            iters.append(abs_key)
                             seen.add(mapped)
                     elif ext_mtx is not None:
                         iters_in_ext.append(abs_key)
@@ -334,21 +352,36 @@ class AssembledJacobian(Jacobian):
 
         iters, iters_in_ext = self._get_subjac_iters(system)
 
-        for _, key, do_add in iters:
-            if do_add:
-                int_mtx._update_add_submat(key, subjacs[key]['value'])
-            else:
+        int_mtx._pre_update()
+        if ext_mtx is not None:
+            ext_mtx._pre_update()
+
+        if self._randomize:
+            for key in iters:
+                int_mtx._update_submat(key, self._randomize_subjac(subjacs[key]['value']))
+
+            for key in iters_in_ext:
+                ext_mtx._update_submat(key, self._randomize_subjac(subjacs[key]['value']))
+        else:
+
+            for key in iters:
                 int_mtx._update_submat(key, subjacs[key]['value'])
 
-        for key in iters_in_ext:
-            ext_mtx._update_submat(key, subjacs[key]['value'])
+            for key in iters_in_ext:
+                ext_mtx._update_submat(key, subjacs[key]['value'])
 
-    def _apply(self, d_inputs, d_outputs, d_residuals, mode):
+        int_mtx._post_update()
+        if ext_mtx is not None:
+            ext_mtx._post_update()
+
+    def _apply(self, system, d_inputs, d_outputs, d_residuals, mode):
         """
         Compute matrix-vector product.
 
         Parameters
         ----------
+        system : System
+            System that is updating this jacobian.
         d_inputs : Vector
             inputs linear vector.
         d_outputs : Vector
@@ -358,18 +391,11 @@ class AssembledJacobian(Jacobian):
         mode : str
             'fwd' or 'rev'.
         """
-        system = self._system
         int_mtx = self._int_mtx
-        if system.pathname in self._ext_mtx:
-            ext_mtx = self._ext_mtx[system.pathname]
-        else:
-            ext_mtx = None
+        ext_mtx = self._ext_mtx[system.pathname]
 
-        if system.pathname in self._view_ranges:
-            ranges = self._view_ranges[system.pathname]
-            int_ranges = (ranges[0], ranges[1], ranges[0], ranges[1])
-        else:
-            int_ranges = None
+        ranges = self._view_ranges[system.pathname]
+        int_ranges = (ranges[0], ranges[1], ranges[0], ranges[1])
 
         # TODO: remove the _unscaled_context call here (and in DictionaryJacobian)
         # and do it outside so that we can avoid an unnecessary extra unscaling/rescaling
@@ -406,6 +432,25 @@ class AssembledJacobian(Jacobian):
                         self._mask_caches[d_inputs._names] = mask
 
                     d_inputs._data += ext_mtx._prod(dresids, mode, None, mask=mask)
+
+    def set_complex_step_mode(self, active):
+        """
+        Turn on or off complex stepping mode.
+
+        When turned on, the value in each subjac is cast as complex, and when turned
+        off, they are returned to real values.
+
+        Parameters
+        ----------
+        active : bool
+            Complex mode flag; set to True prior to commencing complex step.
+        """
+        super(AssembledJacobian, self).set_complex_step_mode(active)
+
+        self._int_mtx.set_complex_step_mode(active)
+        for mtx in itervalues(self._ext_mtx):
+            if mtx:
+                mtx.set_complex_step_mode(active)
 
 
 class DenseJacobian(AssembledJacobian):

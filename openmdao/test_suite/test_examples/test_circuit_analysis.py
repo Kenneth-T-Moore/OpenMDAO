@@ -4,10 +4,10 @@ import numpy as np
 import unittest
 
 from openmdao.api import ExplicitComponent, ImplicitComponent, Group, NewtonSolver, DirectSolver
-
 from openmdao.utils.assert_utils import assert_rel_error
 
 
+<<<<<<< HEAD
 class Resistor(ExplicitComponent):
     """Computes current across a resistor using Ohm's law."""
 
@@ -104,13 +104,15 @@ class Circuit(Group):
         self.linear_solver = DirectSolver()
 
 
+=======
+>>>>>>> e1eee12cb0e1f213c9fb98349e09f9a563f941e5
 class TestCircuit(unittest.TestCase):
 
     def test_circuit_plain_newton_assembled(self):
 
         from openmdao.api import Group, NewtonSolver, DirectSolver, Problem, IndepVarComp
 
-        from openmdao.test_suite.test_examples.test_circuit_analysis import Resistor, Diode, Node
+        from openmdao.test_suite.scripts.circuit_analysis import Resistor, Diode, Node
 
         class Circuit(Group):
 
@@ -170,7 +172,7 @@ class TestCircuit(unittest.TestCase):
 
         from openmdao.api import Group, NewtonSolver, DirectSolver, Problem, IndepVarComp
 
-        from openmdao.test_suite.test_examples.test_circuit_analysis import Resistor, Diode, Node
+        from openmdao.test_suite.scripts.circuit_analysis import Resistor, Diode, Node
 
         class Circuit(Group):
 
@@ -226,7 +228,7 @@ class TestCircuit(unittest.TestCase):
 
         from openmdao.api import Problem, IndepVarComp
 
-        from openmdao.test_suite.test_examples.test_circuit_analysis import Circuit
+        from openmdao.test_suite.scripts.circuit_analysis import Circuit
 
         p = Problem()
         model = p.model
@@ -259,7 +261,7 @@ class TestCircuit(unittest.TestCase):
     def test_circuit_advanced_newton(self):
         from openmdao.api import ArmijoGoldsteinLS, Problem, IndepVarComp
 
-        from openmdao.test_suite.test_examples.test_circuit_analysis import Circuit
+        from openmdao.test_suite.scripts.circuit_analysis import Circuit
 
         p = Problem()
         model = p.model
@@ -301,7 +303,7 @@ class TestCircuit(unittest.TestCase):
         from openmdao.api import ArmijoGoldsteinLS, Problem, IndepVarComp, BalanceComp, ExecComp
         from openmdao.api import NewtonSolver, DirectSolver, NonlinearRunOnce, LinearRunOnce
 
-        from openmdao.test_suite.test_examples.test_circuit_analysis import Circuit
+        from openmdao.test_suite.scripts.circuit_analysis import Circuit
 
         p = Problem()
         model = p.model

@@ -2,8 +2,13 @@
 
 from __future__ import print_function
 
+<<<<<<< HEAD
+=======
+import numpy as np
+
+>>>>>>> e1eee12cb0e1f213c9fb98349e09f9a563f941e5
 from openmdao.solvers.solver import NonlinearSolver
-from openmdao.recorders.recording_iteration_stack import Recording, recording_iteration
+from openmdao.recorders.recording_iteration_stack import Recording
 from openmdao.utils.general_utils import warn_deprecation
 
 
@@ -20,18 +25,6 @@ class NewtonSolver(NonlinearSolver):
         is the parent system's linear solver.
     linesearch : NonlinearSolver
         Line search algorithm. Default is None for no line search.
-    options : OptionsDictionary
-        options dictionary.
-    _system : System
-        pointer to the owning system.
-    _depth : int
-        how many subsolvers deep this solver is (0 means not a subsolver).
-    _vec_names : [str, ...]
-        list of right-hand-side (RHS) vector names.
-    _mode : str
-        'fwd' or 'rev', applicable to linear solvers only.
-    _iter_count : int
-        Number of iterations for the current invocation of the solver.
     """
 
     SOLVER = 'NL: Newton'
@@ -81,6 +74,9 @@ class NewtonSolver(NonlinearSolver):
                              desc='Set to True to turn on sub-solvers (Hybrid Newton).')
         self.options.declare('max_sub_solves', types=int, default=10,
                              desc='Maximum number of subsystem solves.')
+        self.options.declare('cs_reconverge', types=bool, default=True,
+                             desc='When True, when this driver solves under a complex step, nudge '
+                             'the Solution vector by a small amount so that it reconverges.')
 
         self.supports['gradients'] = True
         self.supports['implicit_components'] = True
@@ -97,6 +93,8 @@ class NewtonSolver(NonlinearSolver):
             depth of the current system (already incremented).
         """
         super(NewtonSolver, self)._setup_solvers(system, depth)
+
+        self._disallow_discrete_outputs()
 
         if self.linear_solver is not None:
             self.linear_solver._setup_solvers(self._system, self._depth + 1)
@@ -139,7 +137,7 @@ class NewtonSolver(NonlinearSolver):
         """
         Run the apply_nonlinear method on the system.
         """
-        recording_iteration.stack.append(('_run_apply', 0))
+        self._recording_iter.stack.append(('_run_apply', 0))
 
         system = self._system
 
@@ -150,7 +148,7 @@ class NewtonSolver(NonlinearSolver):
         try:
             system._apply_nonlinear()
         finally:
-            recording_iteration.stack.pop()
+            self._recording_iter.stack.pop()
 
         # Enable local fd
         system._owns_approx_jac = approx_status
@@ -194,6 +192,12 @@ class NewtonSolver(NonlinearSolver):
 
         system = self._system
 
+        # When under a complex step from higher in the hierarchy, sometimes the step is too small
+        # to trigger reconvergence, so nudge the outputs slightly so that we always get at least
+        # one iteration of Newton.
+        if system.under_complex_step and self.options['cs_reconverge']:
+            system._outputs._data += np.linalg.norm(self._system._outputs._data) * 1e-10
+
         # Execute guess_nonlinear if specified.
         system._guess_nonlinear()
 
@@ -204,10 +208,7 @@ class NewtonSolver(NonlinearSolver):
                 self._solver_info.append_solver()
 
                 # should call the subsystems solve before computing the first residual
-                for isub, subsys in enumerate(system._subsystems_myproc):
-                    system._transfer('nonlinear', 'fwd', isub)
-                    subsys._solve_nonlinear()
-                    system._check_reconf_update()
+                self._gs_iter()
 
                 self._solver_info.pop()
 
@@ -219,7 +220,7 @@ class NewtonSolver(NonlinearSolver):
             self.linesearch._global_norm0 = norm0
         return norm0, norm
 
-    def _iter_execute(self):
+    def _single_iteration(self):
         """
         Perform the operations in the iteration loop.
         """
@@ -256,17 +257,27 @@ class NewtonSolver(NonlinearSolver):
         if do_subsolve:
             with Recording('Newton_subsolve', 0, self):
                 self._solver_info.append_solver()
-
-                for isub, subsys in enumerate(system._subsystems_allprocs):
-                    system._transfer('nonlinear', 'fwd', isub)
-
-                    if subsys in system._subsystems_myproc:
-                        subsys._solve_nonlinear()
-
+                self._gs_iter()
                 self._solver_info.pop()
 
         # Enable local fd
         system._owns_approx_jac = approx_status
+
+    def _set_complex_step_mode(self, active):
+        """
+        Turn on or off complex stepping mode.
+
+        Recurses to turn on or off complex stepping mode in all subsystems and their vectors.
+
+        Parameters
+        ----------
+        active : bool
+            Complex mode flag; set to True prior to commencing complex step.
+        """
+        if self.linear_solver is not None:
+            self.linear_solver._set_complex_step_mode(active)
+            if self.linear_solver._assembled_jac is not None:
+                self.linear_solver._assembled_jac.set_complex_step_mode(active)
 
     def _mpi_print_header(self):
         """

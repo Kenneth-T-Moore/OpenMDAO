@@ -6,6 +6,7 @@ from __future__ import print_function, division
 import sys
 import six
 from six.moves import range
+from itertools import product
 
 import numpy as np
 
@@ -68,9 +69,15 @@ def take_nth(rank, size, seq):
     while True:
         for proc in range(size):
             if rank == proc:
-                yield six.next(it)
+                try:
+                    yield six.next(it)
+                except StopIteration:
+                    return
             else:
-                six.next(it)
+                try:
+                    six.next(it)
+                except StopIteration:
+                    return
 
 
 def convert_neg(arr, dim):
@@ -116,6 +123,12 @@ def array_viz(arr, prob=None, of=None, wrt=None, stream=sys.stdout):
     """
     if len(arr.shape) != 2:
         raise RuntimeError("array_viz only works for 2d arrays.")
+
+    if prob is not None:
+        if of is None:
+            of = prob.driver._get_ordered_nl_responses()
+        if wrt is None:
+            wrt = list(prob.driver._designvars)
 
     if prob is None or of is None or wrt is None:
         for r in range(arr.shape[0]):
@@ -257,6 +270,35 @@ def _global2local_offsets(global_offsets):
             off_vn[type_] = goff.copy()
             if goff[0].size > 0:
                 # adjust offsets to be local in each process
-                off_vn[type_] -= off_vn[type_][:, 0].reshape((goff.shape[0], 1))
+                off_vn[type_] -= goff[:, 0].reshape((goff.shape[0], 1))
 
     return offsets
+
+
+def _flatten_src_indices(src_indices, shape_in, shape_out, size_out):
+    """
+    Convert src_indices into a flat, non-negative form.
+
+    Parameters
+    ----------
+    src_indices : ndarray
+        Array of src_indices.  Can be flat or multi-dimensional.
+    shape_in : tuple
+        Shape of the input variable.
+    shape_out : tuple
+        Shape of the output variable.
+    size_out : int
+        Size of the output variable.
+
+    Returns
+    -------
+    ndarray
+        The flattened src_indices.
+    """
+    if len(shape_out) == 1 or shape_in == src_indices.shape:
+        return convert_neg(src_indices.flatten(), size_out)
+
+    entries = [list(range(x)) for x in shape_in]
+    cols = np.vstack(src_indices[i] for i in product(*entries))
+    dimidxs = [convert_neg(cols[:, i], shape_out[i]) for i in range(cols.shape[1])]
+    return np.ravel_multi_index(dimidxs, shape_out)

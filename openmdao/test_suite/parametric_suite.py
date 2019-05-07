@@ -5,7 +5,11 @@ from six.moves import zip
 from six import iteritems, iterkeys, itervalues, string_types
 import collections
 
-from parameterized import parameterized
+try:
+    from parameterized import parameterized
+except ImportError:
+    from openmdao.utils.assert_utils import SkipParameterized as parameterized
+
 from unittest import SkipTest
 
 from openmdao.core.problem import Problem
@@ -70,8 +74,8 @@ def _test_suite(*args, **kwargs):
                         opts[arg] = arg_value
                 else:
                     # We're not asked to vary this parameter, so choose first item as default
-                    # Since we may use a generator (e.g. range), take the first value from the iterator
-                    # instead of indexing.
+                    # Since we may use a generator (e.g. range), take the first value from the
+                    # iterator instead of indexing.
                     for iter_val in default_val:
                         opts[arg] = (iter_val,)
                         break
@@ -106,14 +110,19 @@ def parametric_suite(*args, **kwargs):
     """
     Decorator used for testing a range of different options for a particular
     ParametericTestGroup. If args is present, must only be the value '*',
-    indicating running all available groups/parameters. Otherwise, use kwargs to set the options like so:
-    arg=value will specify that option,
-    arg='*' will vary over all default options,
-    arg=iterable will iterate over the given options.
-    Arguments that are not specified will have a reasonable default chosen."""
+    indicating running all available groups/parameters. Otherwise, use kwargs
+    to set the options like so:
+
+        arg=value will specify that option,
+        arg='*' will vary over all default options,
+        arg=iterable will iterate over the given options.
+
+    Arguments that are not specified will have a reasonable default chosen.
+    """
     run_by_default = kwargs.pop('run_by_default', False)
     test_cases = _test_suite(*args, **kwargs)
-    return parameterized.expand(test_cases, testcase_func_name=_test_name(run_by_default))
+    return parameterized.expand(test_cases, name_func=_test_name(run_by_default))
+
 
 # Needed for Nose
 parametric_suite.__test__ = False
@@ -141,6 +150,7 @@ class ParameterizedInstance(object):
     linear_solver_options : dict
         Options to pass into the constructor for `linear_solver_class`.
     """
+
     def __init__(self, group_type, **kwargs):
 
         self._group_type = group_type
@@ -208,9 +218,7 @@ class ParameterizedInstance(object):
 
         prob.setup(check=check, local_vector_class=vec_class)
 
-        fail, rele, abse = prob.run_model()
-        if fail:
-            raise RuntimeError('Problem run failed: re %f ; ae %f' % (rele, abse))
+        prob.run_model()
 
     def compute_totals(self, mode='fwd'):
         """
@@ -230,9 +238,7 @@ class ParameterizedInstance(object):
 
         if problem._mode != mode:
             problem.setup(check=False, mode=mode)
-            fail, rele, abse = problem.run_model()
-            if fail:
-                raise RuntimeError('Problem run failed: re %f ; ae %f' % (rele, abse))
+            problem.run_model()
 
         root = problem.model
         of = root.total_of

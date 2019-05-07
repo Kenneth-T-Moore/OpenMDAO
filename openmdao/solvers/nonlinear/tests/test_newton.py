@@ -1,22 +1,22 @@
 """Test the Newton nonlinear solver. """
 
 import unittest
-import warnings
+
 import numpy as np
 
 from openmdao.api import Group, Problem, IndepVarComp, LinearBlockGS, \
     NewtonSolver, ExecComp, ScipyKrylov, ImplicitComponent, \
     DirectSolver, AnalysisError
-from openmdao.utils.assert_utils import assert_rel_error
+from openmdao.core.tests.test_discrete import InternalDiscreteGroup
+from openmdao.solvers.linesearch.backtracking import ArmijoGoldsteinLS
 from openmdao.test_suite.components.double_sellar import DoubleSellar, DoubleSellarImplicit, \
      SubSellar
+from openmdao.test_suite.components.implicit_newton_linesearch import ImplCompTwoStates
 from openmdao.test_suite.components.sellar import SellarDerivativesGrouped, \
      SellarNoDerivatives, SellarDerivatives, SellarStateConnection, StateConnection, \
      SellarDis1withDerivatives, SellarDis2withDerivatives
+from openmdao.utils.assert_utils import assert_rel_error, assert_warning
 
-from openmdao.solvers.linesearch.backtracking import ArmijoGoldsteinLS
-from openmdao.test_suite.components.implicit_newton_linesearch \
-    import ImplCompTwoStates, ImplCompTwoStatesArrays
 
 class TestNewton(unittest.TestCase):
 
@@ -90,16 +90,14 @@ class TestNewton(unittest.TestCase):
         top.model.nonlinear_solver.options['maxiter'] = 10
         top.model.linear_solver = ScipyKrylov()
 
-        msg = "The 'line_search' attribute provides backwards compatibility with OpenMDAO 1.x ; use 'linesearch' instead."
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            top.model.nonlinear_solver.line_search = ArmijoGoldsteinLS(bound_enforcement='vector')
-            self.assertEqual(str(w[-1].message), msg)
+        msg = "The 'line_search' attribute provides backwards compatibility with OpenMDAO 1.x ; " \
+              "use 'linesearch' instead."
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+        with assert_warning(DeprecationWarning, msg):
+            top.model.nonlinear_solver.line_search = ArmijoGoldsteinLS(bound_enforcement='vector')
+
+        with assert_warning(DeprecationWarning, msg):
             ls = top.model.nonlinear_solver.line_search
-            self.assertEqual(str(w[-1].message), msg)
 
         ls.options['maxiter'] = 10
         ls.options['alpha'] = 1.0
@@ -580,8 +578,8 @@ class TestNewton(unittest.TestCase):
                 super(CountNewton, self).__init__(**kwargs)
                 self.total_count = 0
 
-            def _iter_execute(self):
-                super(CountNewton, self)._iter_execute()
+            def _single_iteration(self):
+                super(CountNewton, self)._single_iteration()
                 self.total_count += 1
 
         class CountDS(DirectSolver):
@@ -804,7 +802,7 @@ class TestNewtonFeatures(unittest.TestCase):
     def test_feature_basic(self):
         import numpy as np
 
-        from openmdao.api import Problem, IndepVarComp, NewtonSolver, LinearBlockGS, ExecComp
+        from openmdao.api import Problem, IndepVarComp, NewtonSolver, LinearBlockGS, ExecComp, DirectSolver
         from openmdao.test_suite.components.sellar import SellarDis1withDerivatives, SellarDis2withDerivatives
 
         prob = Problem()
@@ -823,7 +821,7 @@ class TestNewtonFeatures(unittest.TestCase):
         model.add_subsystem('con_cmp1', ExecComp('con1 = 3.16 - y1'), promotes=['con1', 'y1'])
         model.add_subsystem('con_cmp2', ExecComp('con2 = y2 - 24.0'), promotes=['con2', 'y2'])
 
-        model.linear_solver = LinearBlockGS()
+        model.linear_solver = DirectSolver()
 
         model.nonlinear_solver = NewtonSolver()
 
@@ -837,7 +835,7 @@ class TestNewtonFeatures(unittest.TestCase):
     def test_feature_maxiter(self):
         import numpy as np
 
-        from openmdao.api import Problem, Group, IndepVarComp, NewtonSolver, LinearBlockGS, ExecComp
+        from openmdao.api import Problem, Group, IndepVarComp, NewtonSolver, LinearBlockGS, ExecComp, DirectSolver
         from openmdao.test_suite.components.sellar import SellarDis1withDerivatives, SellarDis2withDerivatives
 
         prob = Problem()
@@ -856,7 +854,7 @@ class TestNewtonFeatures(unittest.TestCase):
         model.add_subsystem('con_cmp1', ExecComp('con1 = 3.16 - y1'), promotes=['con1', 'y1'])
         model.add_subsystem('con_cmp2', ExecComp('con2 = y2 - 24.0'), promotes=['con2', 'y2'])
 
-        model.linear_solver = LinearBlockGS()
+        model.linear_solver = DirectSolver()
 
         nlgbs = model.nonlinear_solver = NewtonSolver()
         nlgbs.options['maxiter'] = 2
@@ -871,7 +869,7 @@ class TestNewtonFeatures(unittest.TestCase):
     def test_feature_rtol(self):
         import numpy as np
 
-        from openmdao.api import Problem, Group, IndepVarComp, NewtonSolver, LinearBlockGS, ExecComp
+        from openmdao.api import Problem, Group, IndepVarComp, NewtonSolver, LinearBlockGS, ExecComp, DirectSolver
         from openmdao.test_suite.components.sellar import SellarDis1withDerivatives, SellarDis2withDerivatives
 
         prob = Problem()
@@ -890,7 +888,7 @@ class TestNewtonFeatures(unittest.TestCase):
         model.add_subsystem('con_cmp1', ExecComp('con1 = 3.16 - y1'), promotes=['con1', 'y1'])
         model.add_subsystem('con_cmp2', ExecComp('con2 = y2 - 24.0'), promotes=['con2', 'y2'])
 
-        model.linear_solver = LinearBlockGS()
+        model.linear_solver = DirectSolver()
 
         nlgbs = model.nonlinear_solver = NewtonSolver()
         nlgbs.options['rtol'] = 1e-3
@@ -905,7 +903,7 @@ class TestNewtonFeatures(unittest.TestCase):
     def test_feature_atol(self):
         import numpy as np
 
-        from openmdao.api import Problem, Group, IndepVarComp, NewtonSolver, LinearBlockGS, ExecComp
+        from openmdao.api import Problem, Group, IndepVarComp, NewtonSolver, LinearBlockGS, ExecComp, DirectSolver
         from openmdao.test_suite.components.sellar import SellarDis1withDerivatives, SellarDis2withDerivatives
 
         prob = Problem()
@@ -924,7 +922,7 @@ class TestNewtonFeatures(unittest.TestCase):
         model.add_subsystem('con_cmp1', ExecComp('con1 = 3.16 - y1'), promotes=['con1', 'y1'])
         model.add_subsystem('con_cmp2', ExecComp('con2 = y2 - 24.0'), promotes=['con2', 'y2'])
 
-        model.linear_solver = LinearBlockGS()
+        model.linear_solver = DirectSolver()
 
         nlgbs = model.nonlinear_solver = NewtonSolver()
         nlgbs.options['atol'] = 1e-4
@@ -1014,7 +1012,8 @@ class TestNewtonFeatures(unittest.TestCase):
     def test_feature_err_on_maxiter(self):
         import numpy as np
 
-        from openmdao.api import Problem, Group, IndepVarComp, NewtonSolver, LinearBlockGS, ExecComp, AnalysisError
+        from openmdao.api import Problem, Group, IndepVarComp, NewtonSolver, LinearBlockGS, \
+                                 ExecComp, AnalysisError, DirectSolver
         from openmdao.test_suite.components.sellar import SellarDis1withDerivatives, SellarDis2withDerivatives
 
         prob = Problem()
@@ -1033,7 +1032,7 @@ class TestNewtonFeatures(unittest.TestCase):
         model.add_subsystem('con_cmp1', ExecComp('con1 = 3.16 - y1'), promotes=['con1', 'y1'])
         model.add_subsystem('con_cmp2', ExecComp('con2 = y2 - 24.0'), promotes=['con2', 'y2'])
 
-        model.linear_solver = LinearBlockGS()
+        model.linear_solver = DirectSolver()
 
         nlgbs = model.nonlinear_solver = NewtonSolver()
         nlgbs.options['maxiter'] = 1

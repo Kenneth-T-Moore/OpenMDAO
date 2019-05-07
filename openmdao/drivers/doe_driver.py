@@ -73,9 +73,9 @@ class DOEDriver(Driver):
         """
         self.options.declare('generator', types=(DOEGenerator), default=DOEGenerator(),
                              desc='The case generator. If default, no cases are generated.')
-        self.options.declare('run_parallel', default=False,
+        self.options.declare('run_parallel', types=bool, default=False,
                              desc='Set to True to execute cases in parallel.')
-        self.options.declare('procs_per_model', default=1, lower=1,
+        self.options.declare('procs_per_model', types=int, default=1, lower=1,
                              desc='Number of processors to give each model under MPI.')
 
     def _setup_comm(self, comm):
@@ -189,10 +189,10 @@ class DOEDriver(Driver):
                 if msg:
                     raise(ValueError(msg))
 
-        with RecordingDebugging(self._name, self.iter_count, self) as rec:
+        with RecordingDebugging(self._get_name(), self.iter_count, self) as rec:
             try:
-                failure_flag, _, _ = self._problem.model._solve_nonlinear()
-                metadata['success'] = not failure_flag
+                self._problem.model.run_solve_nonlinear()
+                metadata['success'] = 1
                 metadata['msg'] = ''
             except AnalysisError:
                 metadata['success'] = 0
@@ -236,7 +236,7 @@ class DOEDriver(Driver):
 
         Parameters
         ----------
-        recorder : BaseRecorder
+        recorder : CaseRecorder
            A recorder instance.
         """
         # keep track of recorders so we can flag them as parallel

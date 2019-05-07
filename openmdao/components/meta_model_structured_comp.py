@@ -8,15 +8,18 @@ from six.moves import range, zip
 
 from scipy import __version__ as scipy_version
 try:
-    from scipy.interpolate._bsplines import make_interp_spline
+    from scipy.interpolate._bsplines import make_interp_spline as _make_interp_spline
 except ImportError:
-    make_interp_spline = False
+    def _make_interp_spline(*args, **kwargs):
+        msg = "'MetaModelStructuredComp' requires scipy>=0.19, but the currently" \
+              " installed version is %s." % scipy_version
+        raise RuntimeError(msg)
 
 from scipy.interpolate.interpnd import _ndim_coords_from_arrays
 import numpy as np
 
 from openmdao.core.explicitcomponent import ExplicitComponent
-from openmdao.utils.general_utils import warn_deprecation
+from openmdao.utils.general_utils import warn_deprecation, simple_warning
 from openmdao.core.analysis_error import AnalysisError
 
 
@@ -186,11 +189,6 @@ class _RegularGridInterp(object):
             order will be reduced as needed on a per-dimension basis. Default
             is True (raise an exception).
         """
-        if not make_interp_spline:
-            msg = "'MetaModelStructuredComp' requires scipy>=0.19, but the currently" \
-                  " installed version is %s." % scipy_version
-            warnings.warn(msg)
-
         configs = _RegularGridInterp._interp_methods()
         self._all_methods, self._interp_config = configs
         if method not in self._all_methods:
@@ -299,6 +297,10 @@ class _RegularGridInterp(object):
 
         if self.bounds_error:
             for i, p in enumerate(xi.T):
+                if np.isnan(p).any():
+                    raise OutOfBoundsError("One of the requested xi contains a NaN",
+                                           i, np.NaN, self.grid[i][0], self.grid[i][-1])
+
                 if not np.logical_and(np.all(self.grid[i][0] <= p),
                                       np.all(p <= self.grid[i][-1])):
                     p1 = np.where(self.grid[i][0] > p)[0]
@@ -323,7 +325,7 @@ class _RegularGridInterp(object):
                 if n_p <= k:
                     ki[-1] = n_p - 1
 
-        interpolator = make_interp_spline
+        interpolator = _make_interp_spline
         result = self._evaluate_splines(self.values[:].T,
                                         xi,
                                         indices,
@@ -622,11 +624,6 @@ class MetaModelStructuredComp(ExplicitComponent):
         """
         Initialize the component.
         """
-        if not make_interp_spline:
-            msg = "'MetaModelStructuredComp' requires scipy>=0.19, but the currently" \
-                  " installed version is %s." % scipy_version
-            warnings.warn(msg)
-
         self.options.declare('extrapolate', types=bool, default=False,
                              desc='Sets whether extrapolation should be performed '
                                   'when an input is out of bounds.')
@@ -683,7 +680,7 @@ class MetaModelStructuredComp(ExplicitComponent):
             super(MetaModelStructuredComp, self).add_input("%s_train" % name,
                                                            val=training_data, **kwargs)
 
-    def _setup_vars(self, recurse=True):
+    def _setup_var_data(self, recurse=True):
         """
         Instantiate surrogates for the output variables that use the default surrogate.
 
@@ -705,7 +702,7 @@ class MetaModelStructuredComp(ExplicitComponent):
         if self.options['training_data_gradients']:
             self.sh = tuple([self.options['vec_size']] + [i.size for i in self.params])
 
-        super(MetaModelStructuredComp, self)._setup_vars()
+        super(MetaModelStructuredComp, self)._setup_var_data(recurse=recurse)
 
     def _setup_partials(self, recurse=True):
         """
@@ -726,6 +723,9 @@ class MetaModelStructuredComp(ExplicitComponent):
             self._declare_partials(of=name, wrt=self.pnames, rows=arange, cols=arange)
             if self.options['training_data_gradients']:
                 self._declare_partials(of=name, wrt="%s_train" % name)
+
+        # MetaModelStructuredComp does not support complex step.
+        self.set_check_partial_options('*', method='fd')
 
     def compute(self, inputs, outputs):
         """
@@ -786,7 +786,7 @@ class MetaModelStructuredComp(ExplicitComponent):
             for j in range(self.options['vec_size']):
                 for i, axis in enumerate(self.params):
                     e_i = np.eye(axis.size)
-                    interp = make_interp_spline(axis, e_i, k=self._ki[i], axis=0)
+                    interp = _make_interp_spline(axis, e_i, k=self._ki[i], axis=0)
                     if i == 0:
                         val = interp(pt[j, i])
                     else:

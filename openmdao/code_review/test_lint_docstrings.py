@@ -10,7 +10,11 @@ import collections
 import re
 from six import PY3
 
-from numpydoc.docscrape import NumpyDocString
+try:
+    from numpydoc.docscrape import NumpyDocString
+except ImportError:
+    NumpyDocString = None
+
 
 # directories in which we do not wish to lint for docstrings/parameters.
 exclude = [
@@ -165,6 +169,7 @@ class DecoratorFinder(ast.NodeVisitor):
             self.decorators[node.name].append(name)
 
 
+@unittest.skipUnless(NumpyDocString, "requires 'numpydoc', install openmdao[test]")
 class LintTestCase(unittest.TestCase):
 
     def check_summary(self, numpy_doc_string):
@@ -173,6 +178,9 @@ class LintTestCase(unittest.TestCase):
         ----------
         numpy_doc_string : numpydoc.docscrape.NumpyDocString
             An instance of the NumpyDocString parsed from the method
+
+        Returns
+        -------
         failures : dict
             The failures encountered by the method.  These are all stored
             so that we can fail once at the end of the check_method method
@@ -200,17 +208,20 @@ class LintTestCase(unittest.TestCase):
 
         return new_failures
 
-    def check_parameters(self, func, argspec, numpy_doc_string):
-        """ Check that the parameters section is correct.
+    def check_parameters(self, argspec, numpy_doc_string):
+        """
+        Check that the parameters section is correct.
 
         Parameters
         ----------
-        func :
         argspec : namedtuple
             Method argument information from inspect.getargspec (python2) or
             inspect.getfullargspec (python3)
         numpy_doc_string : numpydoc.docscrape.NumpyDocString
             An instance of the NumpyDocString parsed from the method
+
+        Returns
+        -------
         failures : dict
             The failures encountered by the method.  These are all stored
             so that we can fail once at the end of the check_method method
@@ -276,8 +287,9 @@ class LintTestCase(unittest.TestCase):
 
         return new_failures
 
-    def check_returns(self, func, numpy_doc_string):
-        """ Check that the returns section is correct.
+    def check_returns(self, func, numpy_doc_string, name_required=False):
+        """
+        Check that the returns section is correct.
 
         Parameters
         ----------
@@ -285,6 +297,11 @@ class LintTestCase(unittest.TestCase):
             The method being checked
         numpy_doc_string : numpydoc.docscrape.NumpyDocString
             An instance of the NumpyDocString parsed from the method
+        name_required : bool
+            If True, a name is required for the return value.
+
+        Returns
+        -------
         failures : dict
             The failures encountered by the method.  These are all stored
             so that we can fail once at the end of the check_method method
@@ -318,10 +335,8 @@ class LintTestCase(unittest.TestCase):
                                 'no \'Returns\' section in docstring')
         elif f.has_return and doc_returns:
             # Check formatting
-            for entry in doc_returns:
-                name = entry[0]
-                desc = '\n'.join(entry[2])
-                if not name:
+            for (name, typ, desc) in doc_returns:
+                if name_required and not name:
                     new_failures.append('no detectable name for Return '
                                         'value'.format(name))
                 if desc == '':
@@ -380,7 +395,7 @@ class LintTestCase(unittest.TestCase):
 
         new_failures.extend(self.check_summary(nds))
 
-        new_failures.extend(self.check_parameters(method, argspec, nds))
+        new_failures.extend(self.check_parameters(argspec, nds))
 
         new_failures.extend(self.check_returns(method, nds))
 
@@ -393,6 +408,25 @@ class LintTestCase(unittest.TestCase):
                 failures[key] = new_failures
 
     def check_class(self, dir_name, file_name, class_name, clss, failures):
+        """
+        Perform docstring checks on a class.
+
+        Parameters
+        ----------
+        dir_name : str
+            The name of the directory in which the method is defined.
+        file_name : str
+            The name of the file in which the method is defined.
+        class_name : str
+            The name of the class being checked.
+        clss : class
+            The class being tested.
+        failures : dict
+            The failures encountered by the method.  These are all stored
+            so that we can fail once at the end of the check_method method
+            with information about every failure. Form is
+            { 'dir_name/file_name:class_name.method_name': [ messages ] }
+        """
 
         new_failures = []
         doc = inspect.getdoc(clss)
@@ -413,7 +447,8 @@ class LintTestCase(unittest.TestCase):
                 failures[key] = new_failures
 
     def check_function(self, dir_name, file_name, func_name, func, failures):
-        """ Perform docstring checks on a function.
+        """
+        Perform docstring checks on a function.
 
         Parameters
         ----------
@@ -423,7 +458,7 @@ class LintTestCase(unittest.TestCase):
             The name of the file in which the method is defined.
         func_name : str
             The name of the function being checked
-        fun : function
+        func : function
             The function being tested.
         failures : dict
             The failures encountered by the method.  These are all stored
@@ -460,7 +495,7 @@ class LintTestCase(unittest.TestCase):
 
         new_failures.extend(self.check_summary(nds))
 
-        new_failures.extend(self.check_parameters(func, argspec, nds))
+        new_failures.extend(self.check_parameters(argspec, nds))
 
         new_failures.extend(self.check_returns(func, nds))
 
@@ -509,7 +544,7 @@ class LintTestCase(unittest.TestCase):
 
                     # Loop over classes
                     classes = [x for x in dir(mod)
-                               if inspect.isclass(getattr(mod, x)) and
+                               if not x.startswith('_') and inspect.isclass(getattr(mod, x)) and
                                getattr(mod, x).__module__ == module_name]
 
                     for class_name in classes:
@@ -545,9 +580,10 @@ class LintTestCase(unittest.TestCase):
                         funcs = []
 
                     for func_name in funcs:
-                        func = getattr(mod, func_name)
-                        self.check_function(dir_name, file_name, func_name,
-                                            func, failures)
+                        if not func_name.startswith('_'):
+                            func = getattr(mod, func_name)
+                            self.check_function(dir_name, file_name, func_name,
+                                                func, failures)
 
         if failures:
             msg = '\n'

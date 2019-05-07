@@ -2,8 +2,11 @@
 
 from __future__ import division, print_function
 
+from six import StringIO
+
 import os
 import re
+import sys
 import shutil
 import tempfile
 
@@ -12,22 +15,24 @@ from distutils.version import LooseVersion
 
 import numpy as np
 
-from openmdao.core.problem import Problem
-from openmdao.core.indepvarcomp import IndepVarComp
+from openmdao.api import Problem, IndepVarComp, ExecComp, Group, BalanceComp, AnalysisError
 
+from openmdao.solvers.linear.direct import DirectSolver
 from openmdao.solvers.nonlinear.broyden import BroydenSolver
 from openmdao.solvers.nonlinear.newton import NewtonSolver
 from openmdao.solvers.nonlinear.nonlinear_block_gs import NonlinearBlockGS
 from openmdao.solvers.nonlinear.nonlinear_block_jac import NonlinearBlockJac
 
-from openmdao.test_suite.test_examples.test_circuit_analysis import Circuit
+from openmdao.test_suite.scripts.circuit_analysis import Circuit
 
 from openmdao.utils.assert_utils import assert_rel_error
 from openmdao.utils.general_utils import run_model
 from openmdao.utils.general_utils import printoptions
 
-from parameterized import parameterized
-
+try:
+    from parameterized import parameterized
+except ImportError:
+    from openmdao.utils.assert_utils import SkipParameterized as parameterized
 
 nonlinear_solvers = [
     NonlinearBlockGS,
@@ -39,9 +44,12 @@ nonlinear_solvers = [
 
 class TestNonlinearSolvers(unittest.TestCase):
     def setUp(self):
+        import re
+        import os
+        from tempfile import mkdtemp
         # perform test in temporary directory
         self.startdir = os.getcwd()
-        self.tempdir = tempfile.mkdtemp(prefix='test_solver')
+        self.tempdir = mkdtemp(prefix='test_solver')
         os.chdir(self.tempdir)
 
         # iteration coordinate, file name and variable data are common for all tests
@@ -76,10 +84,13 @@ class TestNonlinearSolvers(unittest.TestCase):
         ])
 
     def tearDown(self):
+        import os
+        from shutil import rmtree
+
         # clean up the temporary directory
         os.chdir(self.startdir)
         try:
-            shutil.rmtree(self.tempdir)
+            rmtree(self.tempdir)
         except OSError:
             pass
 
@@ -98,10 +109,13 @@ class TestNonlinearSolvers(unittest.TestCase):
         model.connect('ground.V', 'circuit.Vg')
 
         p.setup()
-
         nl = model.circuit.nonlinear_solver = solver()
 
         nl.options['debug_print'] = True
+        nl.options['err_on_maxiter'] = True
+
+        if name == 'NonlinearBlockGS':
+            nl.options['use_apply_nonlinear'] = True
 
         # suppress solver output for test
         nl.options['iprint'] = model.circuit.linear_solver.options['iprint'] = -1
@@ -123,7 +137,7 @@ class TestNonlinearSolvers(unittest.TestCase):
 
         with printoptions(**opts):
             # run the model and check for expected output file
-            output = run_model(p)
+            output = run_model(p, ignore_exception=True)
 
         expected_output = '\n'.join([
             self.expected_data,
@@ -137,8 +151,11 @@ class TestNonlinearSolvers(unittest.TestCase):
             self.assertEqual(f.read(), self.expected_data)
 
     def test_solver_debug_print_feature(self):
-        from openmdao.api import Problem, IndepVarComp, NewtonSolver
-        from openmdao.test_suite.test_examples.test_circuit_analysis import Circuit
+        from distutils.version import LooseVersion
+        import numpy as np
+        from openmdao.api import Problem, IndepVarComp, NewtonSolver, AnalysisError
+        from openmdao.test_suite.scripts.circuit_analysis import Circuit
+        from openmdao.utils.general_utils import printoptions
 
         p = Problem()
         model = p.model
@@ -156,6 +173,7 @@ class TestNonlinearSolvers(unittest.TestCase):
 
         nl.options['iprint'] = 2
         nl.options['debug_print'] = True
+        nl.options['err_on_maxiter'] = True
 
         # set some poor initial guesses so that we don't converge
         p['circuit.n1.V'] = 10.
@@ -168,10 +186,83 @@ class TestNonlinearSolvers(unittest.TestCase):
 
         with printoptions(**opts):
             # run the model
-            p.run_model()
+            try:
+                p.run_model()
+            except AnalysisError:
+                pass
 
         with open('rank0_root_0_NLRunOnce_0_circuit_0.dat', 'r') as f:
             self.assertEqual(f.read(), self.expected_data)
+
+
+class TestNonlinearSolversIsolated(unittest.TestCase):
+    """
+    This test needs to run isolated to preclude interactions in the underlying
+    `warnings` module that is used to raise the singular entry error.
+    """
+    ISOLATED = True
+
+    def setUp(self):
+        # perform test in temporary directory
+        self.startdir = os.getcwd()
+        self.tempdir = tempfile.mkdtemp(prefix='test_solver')
+        os.chdir(self.tempdir)
+
+    def tearDown(self):
+        # clean up the temporary directory
+        os.chdir(self.startdir)
+        try:
+            shutil.rmtree(self.tempdir)
+        except OSError:
+            pass
+
+    def test_debug_after_raised_error(self):
+        prob = Problem()
+        model = prob.model
+
+        comp = IndepVarComp()
+        comp.add_output('dXdt:TAS', val=1.0)
+        comp.add_output('accel_target', val=2.0)
+        model.add_subsystem('des_vars', comp, promotes=['*'])
+
+        teg = model.add_subsystem('thrust_equilibrium_group', subsys=Group())
+        teg.add_subsystem('dynamics', ExecComp('z = 2.0*thrust'), promotes=['*'])
+
+        thrust_bal = BalanceComp()
+        thrust_bal.add_balance(name='thrust', val=1207.1, lhs_name='dXdt:TAS',
+                               rhs_name='accel_target', eq_units='m/s**2', lower=-10.0, upper=10000.0)
+
+        teg.add_subsystem(name='thrust_bal', subsys=thrust_bal,
+                          promotes_inputs=['dXdt:TAS', 'accel_target'],
+                          promotes_outputs=['thrust'])
+
+        teg.linear_solver = DirectSolver()
+
+        teg.nonlinear_solver = NewtonSolver()
+        teg.nonlinear_solver.options['solve_subsystems'] = True
+        teg.nonlinear_solver.options['max_sub_solves'] = 1
+        teg.nonlinear_solver.options['atol'] = 1e-4
+        teg.nonlinear_solver.options['debug_print'] = True
+
+        prob.setup(check=False)
+        prob.set_solver_print(level=0)
+
+        stdout = sys.stdout
+        strout = StringIO()
+        sys.stdout = strout
+
+        with self.assertRaises(RuntimeError) as cm:
+            prob.run_model()
+
+        sys.stdout = stdout
+
+        output = strout.getvalue()
+        target = "'thrust_equilibrium_group.thrust_bal.thrust'"
+        self.assertTrue(target in output, msg=target + "NOT FOUND IN" + output)
+
+        # Make sure exception is unchanged.
+        expected_msg = "Singular entry found in 'thrust_equilibrium_group' for row associated with state/residual 'thrust'."
+        self.assertEqual(expected_msg, str(cm.exception))
 
 
 if __name__ == "__main__":

@@ -55,7 +55,7 @@ class ExternalCodeDelegate(object):
         comp.options.declare('external_output_files', [],
                              desc='List of output files that must exist after execution, '
                                   'otherwise an Exception is raised.')
-        comp.options.declare('fail_hard', True,
+        comp.options.declare('fail_hard', types=bool, default=True,
                              desc="If True, external code errors raise a 'hard' exception "
                                   "(RuntimeError), otherwise errors raise a 'soft' exception "
                                   "(AnalysisError).")
@@ -274,6 +274,7 @@ class ExternalCodeComp(ExplicitComponent):
         Options are declared here because this class is intended to be subclassed by
         the end user. The `initialize` method is left available for user-defined options.
         """
+        super(ExternalCodeComp, self)._declare_options()
         self._external_code_runner.declare_options()
 
     def check_config(self, logger):
@@ -371,6 +372,7 @@ class ExternalCodeImplicitComp(ImplicitComponent):
         Options are declared here because this class is intended to be subclassed by
         the end user. The `initialize` method is left available for user-defined options.
         """
+        super(ExternalCodeImplicitComp, self)._declare_options()
         self._external_code_runner.declare_options()
 
         # ImplicitComponent has two separate commands to run.

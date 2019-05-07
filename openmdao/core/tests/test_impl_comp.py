@@ -3,11 +3,13 @@ from __future__ import division
 
 import unittest
 
+from six import iteritems
 from six.moves import cStringIO
+
 import numpy as np
 
 from openmdao.api import Problem, Group, ImplicitComponent, IndepVarComp, \
-    NewtonSolver, ScipyKrylov, AnalysisError
+    NewtonSolver, ScipyKrylov, AnalysisError, ExecComp
 from openmdao.utils.assert_utils import assert_rel_error
 
 
@@ -189,6 +191,25 @@ class ImplicitCompTestCase(unittest.TestCase):
         self.assertEqual(text.count('comp3.'), 3)
         self.assertEqual(text.count('value'), 1)
 
+    def test_list_inputs_prom_name(self):
+        self.prob.run_model()
+
+        stream = cStringIO()
+        states = self.prob.model.list_inputs(prom_name=True, shape=True, hierarchical=True,
+                                             out_stream=stream)
+
+        text = stream.getvalue()
+
+        self.assertEqual(text.count('comp2.a'), 1)
+        self.assertEqual(text.count('comp2.b'), 1)
+        self.assertEqual(text.count('comp2.c'), 1)
+        self.assertEqual(text.count('comp3.a'), 1)
+        self.assertEqual(text.count('comp3.b'), 1)
+        self.assertEqual(text.count('comp3.c'), 1)
+
+        num_non_empty_lines = sum([1 for s in text.splitlines() if s.strip()])
+        self.assertEqual(num_non_empty_lines, 13)
+
     def test_list_explicit_outputs(self):
         self.prob.run_model()
 
@@ -296,6 +317,82 @@ class ImplicitCompGuessTestCase(unittest.TestCase):
 
         prob.run_model()
         assert_rel_error(self, prob['comp2.x'], 3.)
+
+    def test_guess_nonlinear_complex_step(self):
+
+        class ImpWithInitial(ImplicitComponent):
+            """
+            An implicit component to solve the quadratic equation: x^2 - 4x + 3
+            (solutions at x=1 and x=3)
+            """
+            def setup(self):
+                self.add_input('a', val=1.)
+                self.add_input('b', val=-4.)
+                self.add_input('c', val=3.)
+
+                self.add_output('x', val=0.)
+
+                self.declare_partials(of='*', wrt='*')
+
+            def apply_nonlinear(self, inputs, outputs, residuals):
+                a = inputs['a']
+                b = inputs['b']
+                c = inputs['c']
+                x = outputs['x']
+                residuals['x'] = a * x ** 2 + b * x + c
+
+            def linearize(self, inputs, outputs, partials):
+                a = inputs['a']
+                b = inputs['b']
+                c = inputs['c']
+                x = outputs['x']
+
+                partials['x', 'a'] = x ** 2
+                partials['x', 'b'] = x
+                partials['x', 'c'] = 1.0
+                partials['x', 'x'] = 2 * a * x + b
+
+            def guess_nonlinear(self, inputs, outputs, resids):
+
+                if outputs._data.dtype == np.complex:
+                    raise RuntimeError('Vector should not be complex when guess_nonlinear is called.')
+
+                # Default initial state of zero for x takes us to x=1 solution.
+                # Here we set it to a value that will take us to the x=3 solution.
+                outputs['x'] = 5.0
+
+        prob = Problem()
+        model = prob.model = Group()
+
+        indep = IndepVarComp()
+        indep.add_output('a', 1.0)
+        indep.add_output('b', -4.0)
+        indep.add_output('c', 3.0)
+        model.add_subsystem('p', indep)
+        model.add_subsystem('comp', ImpWithInitial())
+        model.add_subsystem('fn', ExecComp(['y = .03*a*x*x - .04*a*a*b*x - c']))
+
+        model.connect('p.a', 'comp.a')
+        model.connect('p.a', 'fn.a')
+        model.connect('p.b', 'fn.b')
+        model.connect('p.c', 'fn.c')
+        model.connect('comp.x', 'fn.x')
+
+        model.nonlinear_solver = NewtonSolver()
+        model.nonlinear_solver.options['rtol'] = 1e-12
+        model.nonlinear_solver.options['atol'] = 1e-12
+        model.nonlinear_solver.options['maxiter'] = 15
+        model.linear_solver = ScipyKrylov()
+
+        prob.setup(force_alloc_complex=True)
+        prob.run_model()
+
+        assert_rel_error(self, prob['comp.x'], 3.)
+
+        totals = prob.check_totals(of=['fn.y'], wrt=['p.a'], method='cs', out_stream=None)
+
+        for key, val in iteritems(totals):
+            assert_rel_error(self, val['rel error'][0], 0.0, 1e-9)
 
     def test_guess_nonlinear_transfer(self):
         # Test that data is transfered to a component before calling guess_nonlinear.
@@ -426,11 +523,15 @@ class ImplicitCompGuessTestCase(unittest.TestCase):
         from openmdao.api import Problem, Group, ImplicitComponent, IndepVarComp, NewtonSolver, ScipyKrylov
 
         class ImpWithInitial(ImplicitComponent):
-
+            """
+            An implicit component to solve the quadratic equation: x^2 - 4x + 3
+            (solutions at x=1 and x=3)
+            """
             def setup(self):
                 self.add_input('a', val=1.)
-                self.add_input('b', val=1.)
-                self.add_input('c', val=1.)
+                self.add_input('b', val=-4.)
+                self.add_input('c', val=3.)
+
                 self.add_output('x', val=0.)
 
                 self.declare_partials(of='*', wrt='*')
@@ -441,12 +542,6 @@ class ImplicitCompGuessTestCase(unittest.TestCase):
                 c = inputs['c']
                 x = outputs['x']
                 residuals['x'] = a * x ** 2 + b * x + c
-
-            def solve_nonlinear(self, inputs, outputs):
-                a = inputs['a']
-                b = inputs['b']
-                c = inputs['c']
-                outputs['x'] = (-b + (b ** 2 - 4 * a * c) ** 0.5) / 2 / a
 
             def linearize(self, inputs, outputs, partials):
                 a = inputs['a']
@@ -459,42 +554,23 @@ class ImplicitCompGuessTestCase(unittest.TestCase):
                 partials['x', 'c'] = 1.0
                 partials['x', 'x'] = 2 * a * x + b
 
-                self.inv_jac = 1.0 / (2 * a * x + b)
-
-            def solve_nonlinear(self, inputs, outputs):
-                """ Do nothing. """
-                pass
-
             def guess_nonlinear(self, inputs, outputs, resids):
-                # Solution at 1 and 3. Default value takes us to -1 solution. Here
-                # we set it to a value that will tke us to the 3 solution.
+                # Default initial state of zero for x takes us to x=1 solution.
+                # Here we set it to a value that will take us to the x=3 solution.
                 outputs['x'] = 5.0
 
         prob = Problem()
         model = prob.model = Group()
 
-        model.add_subsystem('pa', IndepVarComp('a', 1.0))
-        model.add_subsystem('pb', IndepVarComp('b', 1.0))
-        model.add_subsystem('pc', IndepVarComp('c', 1.0))
-        model.add_subsystem('comp2', ImpWithInitial())
-        model.connect('pa.a', 'comp2.a')
-        model.connect('pb.b', 'comp2.b')
-        model.connect('pc.c', 'comp2.c')
+        model.add_subsystem('comp', ImpWithInitial())
 
         model.nonlinear_solver = NewtonSolver()
-        model.nonlinear_solver.options['solve_subsystems'] = True
-        model.nonlinear_solver.options['max_sub_solves'] = 1
         model.linear_solver = ScipyKrylov()
 
-        prob.setup(check=False)
-
-        prob['pa.a'] = 1.
-        prob['pb.b'] = -4.
-        prob['pc.c'] = 3.
-
+        prob.setup()
         prob.run_model()
 
-        assert_rel_error(self, prob['comp2.x'], 3.)
+        assert_rel_error(self, prob['comp.x'], 3.)
 
     def test_guess_nonlinear_inputs_read_only(self):
         class ImpWithInitial(ImplicitComponent):
@@ -919,25 +995,6 @@ class ImplicitCompReadOnlyTestCase(unittest.TestCase):
 
         # verify read_only status is reset after AnalysisError
         prob.model.bad._vectors['residual']['linear']['x'] = 111.
-
-
-class QuadGroup(Group):
-    def setup(self):
-        comp1 = self.add_subsystem('comp1', IndepVarComp())
-        comp1.add_output('a', 1.0)
-        comp1.add_output('b', 1.0)
-        comp1.add_output('c', 1.0)
-
-        sub = self.add_subsystem('sub', Group())
-        sub.add_subsystem('comp2', QuadraticComp())
-        sub.add_subsystem('comp3', QuadraticComp())
-
-        self.connect('comp1.a', 'sub.comp2.a')
-        self.connect('comp1.b', 'sub.comp2.b')
-        self.connect('comp1.c', 'sub.comp2.c')
-        self.connect('comp1.a', 'sub.comp3.a')
-        self.connect('comp1.b', 'sub.comp3.b')
-        self.connect('comp1.c', 'sub.comp3.c')
 
 
 class ListFeatureTestCase(unittest.TestCase):

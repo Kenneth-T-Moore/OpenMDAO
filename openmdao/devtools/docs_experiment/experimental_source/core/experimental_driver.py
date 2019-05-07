@@ -31,7 +31,7 @@ class ExperimentalDriver(object):
     recording_options : <OptionsDictionary>
         Dictionary with driver recording options.
     cite : str
-        Listing of relevant citataions that should be referenced when
+        Listing of relevant citations that should be referenced when
         publishing work that uses this class.
     _problem : <Problem>
         Pointer to the containing problem.
@@ -144,7 +144,7 @@ class ExperimentalDriver(object):
 
         Parameters
         ----------
-        recorder : BaseRecorder
+        recorder : CaseRecorder
            A recorder instance.
         """
         self._rec_mgr.append(recorder)
@@ -243,12 +243,16 @@ class ExperimentalDriver(object):
         rec_constraints = self.recording_options['record_constraints']
         rec_responses = self.recording_options['record_responses']
 
+        # includes and excludes for outputs are specified using promoted names
+        # NOTE: only local var names are in abs2prom, all will be gathered later
+        abs2prom = model._var_abs2prom['output']
+
         all_desvars = {n for n in self._designvars
-                       if check_path(n, incl, excl, True)}
+                       if n in abs2prom and check_path(abs2prom[n], incl, excl, True)}
         all_objectives = {n for n in self._objs
-                          if check_path(n, incl, excl, True)}
+                          if n in abs2prom and check_path(abs2prom[n], incl, excl, True)}
         all_constraints = {n for n in self._cons
-                           if check_path(n, incl, excl, True)}
+                           if n in abs2prom and check_path(abs2prom[n], incl, excl, True)}
         if rec_desvars:
             mydesvars = all_desvars
 
@@ -260,7 +264,7 @@ class ExperimentalDriver(object):
 
         if rec_responses:
             myresponses = {n for n in self._responses
-                           if check_path(n, incl, excl, True)}
+                           if n in abs2prom and check_path(abs2prom[n], incl, excl, True)}
 
         # get the includes that were requested for this Driver recording
         if incl:
@@ -271,7 +275,7 @@ class ExperimentalDriver(object):
             # First gather all of the desired outputs
             # The following might only be the local vars if MPI
             mysystem_outputs = {n for n in root._outputs
-                                if check_path(n, incl, excl)}
+                                if n in abs2prom and check_path(abs2prom[n], incl, excl)}
 
             # If MPI, and on rank 0, need to gather up all the variables
             #    even those not local to rank 0
@@ -310,11 +314,6 @@ class ExperimentalDriver(object):
         }
 
         self._rec_mgr.startup(self)
-        if self._rec_mgr._recorders:
-            from openmdao.devtools.problem_viewer.problem_viewer import _get_viewer_data
-            self._model_viewer_data = _get_viewer_data(problem)
-        if self.recording_options['record_metadata']:
-            self._rec_mgr.record_metadata(self)
 
         # set up simultaneous deriv coloring
         if self._simul_coloring_info and self.supports['simultaneous_derivatives']:
@@ -536,10 +535,10 @@ class ExperimentalDriver(object):
             Failure flag; True if failed to converge, False is successful.
         """
         with Recording(self._get_name(), self.iter_count, self) as rec:
-            failure_flag = self._problem.model._solve_nonlinear()
+            self._problem.model.run_solve_nonlinear()
 
         self.iter_count += 1
-        return failure_flag
+        return False
 
     def _dict2array_jac(self, derivs):
         osize = 0

@@ -38,12 +38,20 @@ optlist = ['ALPSO', 'CONMIN', 'FSQP', 'IPOPT', 'NLPQLP',
 # All optimizers that require an initial run
 run_required = ['NSGA2', 'ALPSO']
 
-CITATIONS = """
-@phdthesis{hwang_thesis_2015,
-  author       = {John T. Hwang},
-  title        = {A Modular Approach to Large-Scale Design Optimization of Aerospace Systems},
-  school       = {University of Michigan},
-  year         = 2015
+CITATIONS = """@article{Hwang_maud_2018
+ author = {Hwang, John T. and Martins, Joaquim R.R.A.},
+ title = "{A Computational Architecture for Coupling Heterogeneous
+          Numerical Models and Computing Coupled Derivatives}",
+ journal = "{ACM Trans. Math. Softw.}",
+ volume = {44},
+ number = {4},
+ month = jun,
+ year = {2018},
+ pages = {37:1--37:39},
+ articleno = {37},
+ numpages = {39},
+ doi = {10.1145/3182393},
+ publisher = {ACM},
 }
 """
 
@@ -79,24 +87,12 @@ class pyOptSparseDriver(Driver):
         Optional file to hot start the optimization.
     opt_settings : dict
         Dictionary for setting optimizer-specific options.
-    problem : <Problem>
-        Pointer to the containing problem.
-    supports : <OptionsDictionary>
-        Provides a consistant way for drivers to declare what features they support.
     pyopt_solution : Solution
         Pyopt_sparse solution object.
-    _cons : dict
-        Contains all constraint info.
-    _designvars : dict
-        Contains all design variable info.
     _indep_list : list
         List of design variables.
-    _objs : dict
-        Contains all objective info.
     _quantities : list
         Contains the objectives plus nonlinear constraints.
-    _responses : dict
-        Contains all response info.
     """
 
     def __init__(self, **kwargs):
@@ -209,18 +205,21 @@ class pyOptSparseDriver(Driver):
         # Only need initial run if we have linear constraints or if we are using an optimizer that
         # doesn't perform one initially.
         con_meta = self._cons
+        model_ran = False
         if optimizer in run_required or np.any([con['linear'] for con in itervalues(self._cons)]):
-            with RecordingDebugging(optimizer, self.iter_count, self) as rec:
+            with RecordingDebugging(self._get_name(), self.iter_count, self) as rec:
                 # Initial Run
-                model._solve_nonlinear()
+                model.run_solve_nonlinear()
                 rec.abs = 0.0
                 rec.rel = 0.0
+                model_ran = True
             self.iter_count += 1
 
         # compute dynamic simul deriv coloring or just sparsity if option is set
         if coloring_mod._use_sparsity:
             if self.options['dynamic_simul_derivs']:
-                coloring_mod.dynamic_simul_coloring(self, do_sparsity=True)
+                coloring_mod.dynamic_simul_coloring(self, run_model=not model_ran,
+                                                    do_sparsity=True)
             elif self.options['dynamic_derivs_sparsity']:
                 coloring_mod.dynamic_sparsity(self)
 
@@ -370,11 +369,10 @@ class pyOptSparseDriver(Driver):
         # framework is left in the right final state
         dv_dict = sol.getDVs()
         for name in indep_list:
-            val = dv_dict[name]
-            self.set_design_var(name, val)
+            self.set_design_var(name, dv_dict[name])
 
-        with RecordingDebugging(self.options['optimizer'], self.iter_count, self) as rec:
-            model._solve_nonlinear()
+        with RecordingDebugging(self._get_name(), self.iter_count, self) as rec:
+            model.run_solve_nonlinear()
             rec.abs = 0.0
             rec.rel = 0.0
         self.iter_count += 1
@@ -427,10 +425,10 @@ class pyOptSparseDriver(Driver):
             # print(dv_dict)
 
             # Execute the model
-            with RecordingDebugging(self.options['optimizer'], self.iter_count, self) as rec:
+            with RecordingDebugging(self._get_name(), self.iter_count, self) as rec:
                 self.iter_count += 1
                 try:
-                    model._solve_nonlinear()
+                    model.run_solve_nonlinear()
 
                 # Let the optimizer try to handle the error
                 except AnalysisError:
@@ -494,7 +492,7 @@ class pyOptSparseDriver(Driver):
                                                  return_format='dict')
             # Let the optimizer try to handle the error
             except AnalysisError:
-                self._problem.model._clear_iprint()
+                prob.model._clear_iprint()
                 fail = 1
 
                 # We need to cobble together a sens_dict of the correct size.
@@ -549,7 +547,7 @@ class pyOptSparseDriver(Driver):
         str
             The name of the current optimizer.
         """
-        return self.options['optimizer']
+        return "pyOptSparse_" + self.options['optimizer']
 
     def _get_ordered_nl_responses(self):
         """

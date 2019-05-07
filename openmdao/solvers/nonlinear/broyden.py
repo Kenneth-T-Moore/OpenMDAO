@@ -12,6 +12,7 @@ import numpy as np
 from openmdao.recorders.recording_iteration_stack import Recording
 from openmdao.solvers.solver import NonlinearSolver
 from openmdao.utils.class_util import overrides_method
+from openmdao.utils.general_utils import simple_warning
 
 CITATION = """@ARTICLE{
               Broyden1965ACo,
@@ -104,7 +105,7 @@ class BroydenSolver(NonlinearSolver):
                              desc="Value to scale the starting Jacobian, which is Identity. This "
                                   "option does nothing if you compute the initial Jacobian "
                                   "instead.")
-        self.options.declare('compute_jacobian', default=True,
+        self.options.declare('compute_jacobian', types=bool, default=True,
                              desc="When True, compute an initial Jacobian, otherwise start "
                                   "with Identity scaled by alpha. Further Jacobians may also be "
                                   "computed depending on the other options.")
@@ -113,6 +114,9 @@ class BroydenSolver(NonlinearSolver):
                                   "convergence is considered a failure. The Jacobian will be "
                                   "regenerated once this condition has been reached a number of "
                                   "consecutive times as specified in max_converge_failures.")
+        self.options.declare('cs_reconverge', types=bool, default=True,
+                             desc='When True, when this driver solves under a complex step, nudge '
+                             'the Solution vector by a small amount so that it reconverges.')
         self.options.declare('diverge_limit', default=2.0,
                              desc="Ratio of current residual to previous residual above which the "
                                   "Jacobian will be immediately regenerated.")
@@ -145,6 +149,8 @@ class BroydenSolver(NonlinearSolver):
         super(BroydenSolver, self)._setup_solvers(system, depth)
         self._recompute_jacobian = True
         self._computed_jacobians = 0
+
+        self._disallow_discrete_outputs()
 
         if self.linear_solver is not None:
             self.linear_solver._setup_solvers(self._system, self._depth + 1)
@@ -222,7 +228,7 @@ class BroydenSolver(NonlinearSolver):
             msg = "The following states are not covered by a solver, and may have been " + \
                   "omitted from the BroydenSolver 'state_vars': "
             msg += ', '.join(sorted(missing))
-            warnings.warn(msg)
+            simple_warning(msg)
 
     def _assembled_jac_solver_iter(self):
         """
@@ -274,29 +280,45 @@ class BroydenSolver(NonlinearSolver):
         float
             Initial absolute error in the user-specified residuals.
         """
+        system = self._system
         if self.options['debug_print']:
             self._err_cache['inputs'] = self._system._inputs._copy_views()
             self._err_cache['outputs'] = self._system._outputs._copy_views()
+<<<<<<< HEAD
+=======
 
-        system = self._system
+        # Convert local storage if we are under complex step.
+        if system.under_complex_step:
+            if np.iscomplex(self.xm[0]):
+                self.Gm = self.Gm.astype(np.complex)
+                self.xm = self.xm.astype(np.complex)
+                self.fxm = self.fxm.astype(np.complex)
+        elif np.iscomplex(self.xm[0]):
+            self.Gm = self.Gm.real
+            self.xm = self.xm.real
+            self.fxm = self.fxm.real
+>>>>>>> e1eee12cb0e1f213c9fb98349e09f9a563f941e5
+
         self._converge_failures = 0
         self._computed_jacobians = 0
 
         # Execute guess_nonlinear if specified.
         system._guess_nonlinear()
 
+        # When under a complex step from higher in the hierarchy, sometimes the step is too small
+        # to trigger reconvergence, so nudge the outputs slightly so that we always get at least
+        # one iteration of Broyden.
+        if system.under_complex_step and self.options['cs_reconverge']:
+            system._outputs._data += np.linalg.norm(self._system._outputs._data) * 1e-10
+
         # Start with initial states.
         self.xm = self.get_states()
 
         with Recording('Broyden', 0, self):
-
             self._solver_info.append_solver()
 
             # should call the subsystems solve before computing the first residual
-            for isub, subsys in enumerate(system._subsystems_myproc):
-                system._transfer('nonlinear', 'fwd', isub)
-                subsys._solve_nonlinear()
-                system._check_reconf_update()
+            self._gs_iter()
 
             self._solver_info.pop()
 
@@ -322,9 +344,13 @@ class BroydenSolver(NonlinearSolver):
         if not self._full_inverse:
             # Use full model residual for driving the main loop convergence.
             fxm = self._system._residuals._data
-        return np.sum(fxm**2) ** 0.5
 
-    def _iter_execute(self):
+        if self._system.under_complex_step:
+            return (np.sum(fxm.real**2) + np.sum(fxm.imag**2))**0.5
+        else:
+            return np.sum(fxm**2) ** 0.5
+
+    def _single_iteration(self):
         """
         Perform the operations in the iteration loop.
         """
@@ -351,13 +377,7 @@ class BroydenSolver(NonlinearSolver):
         # Run the model.
         with Recording('Broyden', 0, self):
             self._solver_info.append_solver()
-
-            for isub, subsys in enumerate(system._subsystems_allprocs):
-                system._transfer('nonlinear', 'fwd', isub)
-
-                if subsys in system._subsystems_myproc:
-                    subsys._solve_nonlinear()
-
+            self._gs_iter()
             self._solver_info.pop()
 
         self._run_apply()
@@ -426,7 +446,7 @@ class BroydenSolver(NonlinearSolver):
         # Set inverse Jacobian to identity scaled by alpha.
         # This is the default starting point used by scipy and the general broyden algorithm.
         else:
-            Gm = np.diag(np.full(self.n, -self.options['alpha']))
+            Gm = np.diag(np.full(self.n, -self.options['alpha'], dtype=Gm.dtype))
 
         return Gm
 
@@ -546,7 +566,7 @@ class BroydenSolver(NonlinearSolver):
         do_sub_ln = ln_solver._linearize_children()
         my_asm_jac = ln_solver._assembled_jac
         system._linearize(my_asm_jac, sub_do_ln=do_sub_ln)
-        if my_asm_jac is not None and ln_solver._assembled_jac is not my_asm_jac:
+        if my_asm_jac is not None and system.linear_solver._assembled_jac is not my_asm_jac:
             my_asm_jac._update(system)
         self._linearize()
 
@@ -595,7 +615,7 @@ class BroydenSolver(NonlinearSolver):
         do_sub_ln = ln_solver._linearize_children()
         my_asm_jac = ln_solver._assembled_jac
         system._linearize(my_asm_jac, sub_do_ln=do_sub_ln)
-        if my_asm_jac is not None and ln_solver._assembled_jac is not my_asm_jac:
+        if my_asm_jac is not None and system.linear_solver._assembled_jac is not my_asm_jac:
             my_asm_jac._update(system)
 
         inv_jac = self.linear_solver._inverse()

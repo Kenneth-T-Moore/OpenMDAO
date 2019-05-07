@@ -3,13 +3,12 @@ from __future__ import print_function
 import unittest
 import time
 
-import six
 import numpy as np
 
-from openmdao.api import Problem, ExplicitComponent, Group, IndepVarComp, ExecComp
+from openmdao.api import Problem, ExplicitComponent, Group, ExecComp, ParallelGroup
 from openmdao.utils.mpi import MPI
 from openmdao.utils.array_utils import evenly_distrib_idxs, take_nth
-from openmdao.utils.assert_utils import assert_rel_error
+from openmdao.utils.assert_utils import assert_rel_error, assert_warning
 
 try:
     from openmdao.vectors.petsc_vector import PETScVector
@@ -26,31 +25,38 @@ else:
 
 class InOutArrayComp(ExplicitComponent):
 
-    def __init__(self, arr_size=10):
-        super(InOutArrayComp, self).__init__()
-        self.delay = 0.01
-        self.arr_size = arr_size
+    def initialize(self):
+        self.options.declare('arr_size', types=int, default=10,
+                             desc="Size of input and output vectors.")
+
+        self.options.declare('delay', types=float, default=.01,
+                             desc="Time to sleep in compute function.")
 
     def setup(self):
-        self.add_input('invec', np.ones(self.arr_size, float))
-        self.add_output('outvec', np.ones(self.arr_size, float))
+        arr_size = self.options['arr_size']
+
+        self.add_input('invec', np.ones(arr_size, float))
+        self.add_output('outvec', np.ones(arr_size, float))
 
     def compute(self, inputs, outputs):
-        time.sleep(self.delay)
+        time.sleep(self.options['delay'])
         outputs['outvec'] = inputs['invec'] * 2.
 
 
 class DistribCompSimple(ExplicitComponent):
     """Uses 2 procs but takes full input vars"""
 
-    def __init__(self, arr_size=10):
-        super(DistribCompSimple, self).__init__()
+    def initialize(self):
+        self.options['distributed'] = True
 
-        self.arr_size = arr_size
+        self.options.declare('arr_size', types=int, default=10,
+                             desc="Size of input and output vectors.")
 
     def setup(self):
-        self.add_input('invec', np.ones(self.arr_size, float))
-        self.add_output('outvec', np.ones(self.arr_size, float))
+        arr_size = self.options['arr_size']
+
+        self.add_input('invec', np.ones(arr_size, float))
+        self.add_output('outvec', np.ones(arr_size, float))
 
     def compute(self, inputs, outputs):
         if MPI and self.comm != MPI.COMM_NULL:
@@ -71,10 +77,12 @@ class DistribCompSimple(ExplicitComponent):
 
 class DistribInputComp(ExplicitComponent):
     """Uses 2 procs and takes input var slices"""
-    def __init__(self, arr_size=11):
-        super(DistribInputComp, self).__init__()
-        self.arr_size = arr_size
-        self.distributed = True
+
+    def initialize(self):
+        self.options['distributed'] = True
+
+        self.options.declare('arr_size', types=int, default=11,
+                             desc="Size of input and output vectors.")
 
     def compute(self, inputs, outputs):
         if MPI:
@@ -88,21 +96,25 @@ class DistribInputComp(ExplicitComponent):
         comm = self.comm
         rank = comm.rank
 
-        self.sizes, self.offsets = evenly_distrib_idxs(comm.size, self.arr_size)
+        arr_size = self.options['arr_size']
+
+        self.sizes, self.offsets = evenly_distrib_idxs(comm.size, arr_size)
         start = self.offsets[rank]
         end = start + self.sizes[rank]
 
         self.add_input('invec', np.ones(self.sizes[rank], float),
                        src_indices=np.arange(start, end, dtype=int))
-        self.add_output('outvec', np.ones(self.arr_size, float), shape=np.int32(self.arr_size))
+        self.add_output('outvec', np.ones(arr_size, float), shape=np.int32(arr_size))
 
 
 class DistribOverlappingInputComp(ExplicitComponent):
     """Uses 2 procs and takes input var slices"""
-    def __init__(self, arr_size=11):
-        super(DistribOverlappingInputComp, self).__init__()
-        self.arr_size = arr_size
-        self.distributed = True
+
+    def initialize(self):
+        self.options['distributed'] = True
+
+        self.options.declare('arr_size', types=int, default=11,
+                             desc="Size of input and output vectors.")
 
     def compute(self, inputs, outputs):
         outputs['outvec'][:] = 0
@@ -122,7 +134,9 @@ class DistribOverlappingInputComp(ExplicitComponent):
         comm = self.comm
         rank = comm.rank
 
-        #need to initialize the input to have the correct local size
+        arr_size = self.options['arr_size']
+
+        # need to initialize the input to have the correct local size
         if rank == 0:
             size = 8
             start = 0
@@ -132,17 +146,19 @@ class DistribOverlappingInputComp(ExplicitComponent):
             start = 4
             end = 11
 
-        self.add_output('outvec', np.zeros(self.arr_size, float))
+        self.add_output('outvec', np.zeros(arr_size, float))
         self.add_input('invec', np.ones(size, float),
                        src_indices=np.arange(start, end, dtype=int))
 
 
 class DistribInputDistribOutputComp(ExplicitComponent):
     """Uses 2 procs and takes input var slices."""
-    def __init__(self, arr_size=11):
-        super(DistribInputDistribOutputComp, self).__init__()
-        self.arr_size = arr_size
-        self.distributed = True
+
+    def initialize(self):
+        self.options['distributed'] = True
+
+        self.options.declare('arr_size', types=int, default=11,
+                             desc="Size of input and output vectors.")
 
     def compute(self, inputs, outputs):
         outputs['outvec'] = inputs['invec']*2.0
@@ -152,7 +168,9 @@ class DistribInputDistribOutputComp(ExplicitComponent):
         comm = self.comm
         rank = comm.rank
 
-        sizes, offsets = evenly_distrib_idxs(comm.size, self.arr_size)
+        arr_size = self.options['arr_size']
+
+        sizes, offsets = evenly_distrib_idxs(comm.size, arr_size)
         start = offsets[rank]
         end = start + sizes[rank]
 
@@ -165,10 +183,12 @@ class DistribNoncontiguousComp(ExplicitComponent):
     """Uses 2 procs and takes non-contiguous input var slices and has output
     var slices as well
     """
-    def __init__(self, arr_size=11):
-        super(DistribNoncontiguousComp, self).__init__()
-        self.arr_size = arr_size
-        self.distributed = True
+
+    def initialize(self):
+        self.options['distributed'] = True
+
+        self.options.declare('arr_size', types=int, default=11,
+                             desc="Size of input and output vectors.")
 
     def compute(self, inputs, outputs):
         outputs['outvec'] = inputs['invec']*2.0
@@ -178,7 +198,9 @@ class DistribNoncontiguousComp(ExplicitComponent):
         comm = self.comm
         rank = comm.rank
 
-        idxs = list(take_nth(rank, comm.size, range(self.arr_size)))
+        arr_size = self.options['arr_size']
+
+        idxs = list(take_nth(rank, comm.size, range(arr_size)))
 
         self.add_input('invec', np.ones(len(idxs), float),
                        src_indices=idxs)
@@ -188,10 +210,11 @@ class DistribNoncontiguousComp(ExplicitComponent):
 class DistribGatherComp(ExplicitComponent):
     """Uses 2 procs gathers a distrib input into a full output"""
 
-    def __init__(self, arr_size=11):
-        super(DistribGatherComp, self).__init__()
-        self.arr_size = arr_size
-        self.distributed = True
+    def initialize(self):
+        self.options['distributed'] = True
+
+        self.options.declare('arr_size', types=int, default=11,
+                             desc="Size of input and output vectors.")
 
     def compute(self, inputs, outputs):
         if MPI:
@@ -206,29 +229,63 @@ class DistribGatherComp(ExplicitComponent):
         comm = self.comm
         rank = comm.rank
 
+        arr_size = self.options['arr_size']
+
         self.sizes, self.offsets = evenly_distrib_idxs(comm.size,
-                                                       self.arr_size)
+                                                       arr_size)
         start = self.offsets[rank]
         end = start + self.sizes[rank]
 
         # need to initialize the variable to have the correct local size
         self.add_input('invec', np.ones(self.sizes[rank], float),
                        src_indices=np.arange(start, end, dtype=int))
-        self.add_output('outvec', np.ones(self.arr_size, float))
+        self.add_output('outvec', np.ones(arr_size, float))
 
 
 class NonDistribGatherComp(ExplicitComponent):
     """Uses 2 procs gathers a distrib output into a full input"""
-    def __init__(self, size):
-        super(NonDistribGatherComp, self).__init__()
-        self.size = size
+
+    def initialize(self):
+        self.options.declare('size', types=int, default=1,
+                             desc="Size of input and output vectors.")
 
     def setup(self):
-        self.add_input('invec', np.ones(self.size, float))
-        self.add_output('outvec', np.ones(self.size, float))
+        size = self.options['size']
+
+        self.add_input('invec', np.ones(size, float))
+        self.add_output('outvec', np.ones(size, float))
 
     def compute(self, inputs, outputs):
         outputs['outvec'] = inputs['invec']
+
+
+@unittest.skipIf(PETScVector is not None, "Only runs when PETSc is not available")
+class NOMPITests(unittest.TestCase):
+
+    def test_distrib_idx_in_full_out(self):
+        size = 11
+
+        p = Problem(model=Group())
+        top = p.model
+        C1 = top.add_subsystem("C1", InOutArrayComp(arr_size=size))
+        C2 = top.add_subsystem("C2", DistribInputComp(arr_size=size))
+        top.connect('C1.outvec', 'C2.invec')
+
+        msg = "The 'distributed' option is set to True for Component C2, " \
+              "but there is no distributed vector implementation (MPI/PETSc) " \
+              "available. The default non-distributed vectors will be used."
+
+        with assert_warning(UserWarning, msg):
+            p.setup(check=False)
+
+        # Conclude setup but don't run model.
+        p.final_setup()
+
+        C1._inputs['invec'] = np.array(range(size, 0, -1), float)
+
+        p.run_model()
+
+        self.assertTrue(all(C2._outputs['outvec'] == np.array(range(size, 0, -1), float)*4))
 
 
 @unittest.skipUnless(PETScVector, "PETSc is required.")
@@ -241,8 +298,8 @@ class MPITests(unittest.TestCase):
 
         p = Problem(model=Group())
         top = p.model
-        C1 = top.add_subsystem("C1", InOutArrayComp(size))
-        C2 = top.add_subsystem("C2", DistribCompSimple(size))
+        C1 = top.add_subsystem("C1", InOutArrayComp(arr_size=size))
+        C2 = top.add_subsystem("C2", DistribCompSimple(arr_size=size))
         top.connect('C1.outvec', 'C2.invec')
 
         p.setup(check=False)
@@ -261,9 +318,10 @@ class MPITests(unittest.TestCase):
 
         p = Problem(model=Group())
         top = p.model
-        C1 = top.add_subsystem("C1", InOutArrayComp(size))
-        C2 = top.add_subsystem("C2", DistribInputComp(size))
+        C1 = top.add_subsystem("C1", InOutArrayComp(arr_size=size))
+        C2 = top.add_subsystem("C2", DistribInputComp(arr_size=size))
         top.connect('C1.outvec', 'C2.invec')
+
         p.setup(check=False)
 
         # Conclude setup but don't run model.
@@ -280,8 +338,8 @@ class MPITests(unittest.TestCase):
 
         p = Problem(model=Group())
         top = p.model
-        C1 = top.add_subsystem("C1", InOutArrayComp(size))
-        C2 = top.add_subsystem("C2", DistribInputComp(size))
+        C1 = top.add_subsystem("C1", InOutArrayComp(arr_size=size))
+        C2 = top.add_subsystem("C2", DistribInputComp(arr_size=size))
         C3 = top.add_subsystem("C3", ExecComp("y=x", x=np.zeros(size*commsize),
                                               y=np.zeros(size*commsize)))
         top.connect('C1.outvec', 'C2.invec')
@@ -303,9 +361,9 @@ class MPITests(unittest.TestCase):
 
         p = Problem(model=Group())
         top = p.model
-        C1 = top.add_subsystem("C1", InOutArrayComp(size))
-        C2 = top.add_subsystem("C2", DistribInputDistribOutputComp(size))
-        C3 = top.add_subsystem("C3", DistribGatherComp(size))
+        C1 = top.add_subsystem("C1", InOutArrayComp(arr_size=size))
+        C2 = top.add_subsystem("C2", DistribInputDistribOutputComp(arr_size=size))
+        C3 = top.add_subsystem("C3", DistribGatherComp(arr_size=size))
         top.connect('C1.outvec', 'C2.invec')
         top.connect('C2.outvec', 'C3.invec')
         p.setup(check=False)
@@ -325,9 +383,9 @@ class MPITests(unittest.TestCase):
 
         p = Problem(model=Group())
         top = p.model
-        C1 = top.add_subsystem("C1", InOutArrayComp(size))
-        C2 = top.add_subsystem("C2", DistribNoncontiguousComp(size))
-        C3 = top.add_subsystem("C3", DistribGatherComp(size))
+        C1 = top.add_subsystem("C1", InOutArrayComp(arr_size=size))
+        C2 = top.add_subsystem("C2", DistribNoncontiguousComp(arr_size=size))
+        C3 = top.add_subsystem("C3", DistribGatherComp(arr_size=size))
         top.connect('C1.outvec', 'C2.invec')
         top.connect('C2.outvec', 'C3.invec')
         p.setup(check=False)
@@ -341,9 +399,11 @@ class MPITests(unittest.TestCase):
 
         if MPI:
             if self.comm.rank == 0:
-                self.assertTrue(all(C2._outputs['outvec'] == np.array(list(take_nth(0, 2, range(size))), 'f')*4))
+                self.assertTrue(all(C2._outputs['outvec'] ==
+                                    np.array(list(take_nth(0, 2, range(size))), 'f')*4))
             else:
-                self.assertTrue(all(C2._outputs['outvec'] == np.array(list(take_nth(1, 2, range(size))), 'f')*4))
+                self.assertTrue(all(C2._outputs['outvec'] ==
+                                    np.array(list(take_nth(1, 2, range(size))), 'f')*4))
 
             full_list = list(take_nth(0, 2, range(size))) + list(take_nth(1, 2, range(size)))
             self.assertTrue(all(C3._outputs['outvec'] == np.array(full_list, 'f')*4))
@@ -359,8 +419,8 @@ class MPITests(unittest.TestCase):
 
         p = Problem(model=Group())
         top = p.model
-        C1 = top.add_subsystem("C1", InOutArrayComp(size))
-        C2 = top.add_subsystem("C2", DistribOverlappingInputComp(size))
+        C1 = top.add_subsystem("C1", InOutArrayComp(arr_size=size))
+        C2 = top.add_subsystem("C2", DistribOverlappingInputComp(arr_size=size))
         top.connect('C1.outvec', 'C2.invec')
         p.setup(check=False)
 
@@ -375,7 +435,8 @@ class MPITests(unittest.TestCase):
         self.assertTrue(all(C2._outputs['outvec'][8:] == np.array(range(size, 0, -1), float)[8:]*4))
 
         # overlapping part should be double size of the rest
-        self.assertTrue(all(C2._outputs['outvec'][4:8] == np.array(range(size, 0, -1), float)[4:8]*8))
+        self.assertTrue(all(C2._outputs['outvec'][4:8] ==
+                            np.array(range(size, 0, -1), float)[4:8]*8))
 
     def test_nondistrib_gather(self):
         # regular comp --> distrib comp --> regular comp.  last comp should
@@ -384,9 +445,9 @@ class MPITests(unittest.TestCase):
 
         p = Problem(model=Group())
         top = p.model
-        C1 = top.add_subsystem("C1", InOutArrayComp(size))
-        C2 = top.add_subsystem("C2", DistribInputDistribOutputComp(size))
-        C3 = top.add_subsystem("C3", NonDistribGatherComp(size))
+        C1 = top.add_subsystem("C1", InOutArrayComp(arr_size=size))
+        C2 = top.add_subsystem("C2", DistribInputDistribOutputComp(arr_size=size))
+        C3 = top.add_subsystem("C3", NonDistribGatherComp(size=size))
         top.connect('C1.outvec', 'C2.invec')
         top.connect('C2.outvec', 'C3.invec')
         p.setup(check=False)
@@ -402,6 +463,127 @@ class MPITests(unittest.TestCase):
             self.assertTrue(all(C3._outputs['outvec'] == np.array(range(size, 0, -1), float)*4))
 
 
+class DeprecatedMPITests(unittest.TestCase):
+
+    N_PROCS = 2
+
+    def test_distrib_idx_in_full_out_deprecated(self):
+
+        class DeprecatedDistribInputComp(ExplicitComponent):
+            """Deprecated version of DistribInputComp, uses attribute instead of option."""
+
+            def __init__(self, arr_size=11):
+                super(DeprecatedDistribInputComp, self).__init__()
+                self.arr_size = arr_size
+                self.distributed = True
+
+            def compute(self, inputs, outputs):
+                if MPI:
+                    self.comm.Allgatherv(inputs['invec']*2.0,
+                                         [outputs['outvec'], self.sizes,
+                                          self.offsets, MPI.DOUBLE])
+                else:
+                    outputs['outvec'] = inputs['invec'] * 2.0
+
+            def setup(self):
+                comm = self.comm
+                rank = comm.rank
+
+                self.sizes, self.offsets = evenly_distrib_idxs(comm.size, self.arr_size)
+                start = self.offsets[rank]
+                end = start + self.sizes[rank]
+
+                self.add_input('invec', np.ones(self.sizes[rank], float),
+                               src_indices=np.arange(start, end, dtype=int))
+                self.add_output('outvec', np.ones(self.arr_size, float),
+                                shape=np.int32(self.arr_size))
+
+        size = 11
+
+        p = Problem()
+        top = p.model
+
+        C1 = top.add_subsystem("C1", InOutArrayComp(arr_size=size))
+
+        # check deprecation on setter & getter
+        msg = "The 'distributed' property provides backwards compatibility " \
+              "with OpenMDAO <= 2.4.0 ; use the 'distributed' option instead."
+
+        with assert_warning(DeprecationWarning, msg):
+            C2 = top.add_subsystem("C2", DeprecatedDistribInputComp(arr_size=size))
+
+        with assert_warning(DeprecationWarning, msg):
+            C2.distributed
+
+        # continue to make sure everything still works with the deprecation
+        top.connect('C1.outvec', 'C2.invec')
+
+        # Conclude setup but don't run model.
+        msg = "The 'distributed' option is set to True for Component C2, " \
+              "but there is no distributed vector implementation (MPI/PETSc) " \
+              "available. The default non-distributed vectors will be used."
+
+        if PETScVector is None:
+            with assert_warning(UserWarning, msg):
+                p.setup(check=False)
+        else:
+            p.setup(check=False)
+
+        p.final_setup()
+
+        C1._inputs['invec'] = np.array(range(size, 0, -1), float)
+
+        p.run_model()
+
+        self.assertTrue(all(C2._outputs['outvec'] == np.array(range(size, 0, -1), float)*4))
+
+
+@unittest.skipUnless(PETScVector, "PETSc is required.")
+@unittest.skipUnless(MPI, "MPI is required.")
+class ProbRemoteTests(unittest.TestCase):
+
+    N_PROCS = 4
+
+    def test_prob_getitem_err(self):
+        size = 3
+
+        p = Problem(model=Group())
+        top = p.model
+        par = top.add_subsystem('par', ParallelGroup())
+        C1 = par.add_subsystem("C1", DistribInputDistribOutputComp(arr_size=size))
+        C2 = par.add_subsystem("C2", DistribInputDistribOutputComp(arr_size=size))
+        p.setup(check=False)
+
+        # Conclude setup but don't run model.
+        p.final_setup()
+
+        if C1 in p.model.par._subsystems_myproc:
+            C1._inputs['invec'] = np.array(range(C1._inputs._data.size, 0, -1), float)
+
+        if C2 in p.model.par._subsystems_myproc:
+            C2._inputs['invec'] = np.array(range(C2._inputs._data.size, 0, -1), float) * 3
+
+        p.run_model()
+
+        # test that getitem from Problem on a distrib var raises an exception
+        with self.assertRaises(Exception) as context:
+            ans = p['par.C2.invec']
+        self.assertEqual(str(context.exception),
+                         "Retrieval of the full distributed variable 'par.C2.invec' is not supported.")
+        with self.assertRaises(Exception) as context:
+            ans = p['par.C2.outvec']
+        self.assertEqual(str(context.exception),
+                         "Retrieval of the full distributed variable 'par.C2.outvec' is not supported.")
+        with self.assertRaises(Exception) as context:
+            ans = p['par.C1.invec']
+        self.assertEqual(str(context.exception),
+                         "Retrieval of the full distributed variable 'par.C1.invec' is not supported.")
+        with self.assertRaises(Exception) as context:
+            ans = p['par.C1.outvec']
+        self.assertEqual(str(context.exception),
+                         "Retrieval of the full distributed variable 'par.C1.outvec' is not supported.")
+
+
 @unittest.skipUnless(PETScVector, "PETSc is required.")
 @unittest.skipUnless(MPI, "MPI is required.")
 class MPIFeatureTests(unittest.TestCase):
@@ -411,11 +593,9 @@ class MPIFeatureTests(unittest.TestCase):
     def test_distribcomp_feature(self):
         import numpy as np
 
-        from openmdao.api import Problem, ExplicitComponent, Group, IndepVarComp, PETScVector
+        from openmdao.api import Problem, ExplicitComponent, Group, IndepVarComp
         from openmdao.utils.mpi import MPI
         from openmdao.utils.array_utils import evenly_distrib_idxs
-
-        from openmdao.utils.mpi import MPI
 
         if not MPI:
             raise unittest.SkipTest()
@@ -424,10 +604,27 @@ class MPIFeatureTests(unittest.TestCase):
         size = 15
 
         class DistribComp(ExplicitComponent):
-            def __init__(self, size):
-                super(DistribComp, self).__init__()
-                self.size = size
-                self.distributed = True
+            def initialize(self):
+                self.options['distributed'] = True
+
+                self.options.declare('size', types=int, default=1,
+                                     desc="Size of input and output vectors.")
+
+            def setup(self):
+                comm = self.comm
+                rank = comm.rank
+
+                size = self.options['size']
+
+                # results in 8 entries for proc 0 and 7 entries for proc 1 when using 2 processes.
+                sizes, offsets = evenly_distrib_idxs(comm.size, size)
+                start = offsets[rank]
+                end = start + sizes[rank]
+
+                self.add_input('invec', np.ones(sizes[rank], float),
+                               src_indices=np.arange(start, end, dtype=int))
+
+                self.add_output('outvec', np.ones(sizes[rank], float))
 
             def compute(self, inputs, outputs):
                 if self.comm.rank == 0:
@@ -435,53 +632,47 @@ class MPIFeatureTests(unittest.TestCase):
                 else:
                     outputs['outvec'] = inputs['invec'] * -3.0
 
+        class Summer(ExplicitComponent):
+            """Sums a distributed input."""
+
+            def initialize(self):
+                self.options.declare('size', types=int, default=1,
+                                     desc="Size of input and output vectors.")
+
             def setup(self):
                 comm = self.comm
                 rank = comm.rank
 
-                # this results in 8 entries for proc 0 and 7 entries for proc 1 when using 2 processes.
-                sizes, offsets = evenly_distrib_idxs(comm.size, self.size)
-                start = offsets[rank]
-                end = start + sizes[rank]
+                size = self.options['size']
 
-                self.add_input('invec', np.ones(sizes[rank], float),
-                               src_indices=np.arange(start, end, dtype=int))
-                self.add_output('outvec', np.ones(sizes[rank], float))
-
-
-        class Summer(ExplicitComponent):
-            """Sums a distributed input."""
-
-            def __init__(self, size):
-                super(Summer, self).__init__()
-                self.size = size
-
-            def setup(self):
                 # this results in 8 entries for proc 0 and 7 entries for proc 1
                 # when using 2 processes.
-                sizes, offsets = evenly_distrib_idxs(self.comm.size, self.size)
+                sizes, offsets = evenly_distrib_idxs(comm.size, size)
                 start = offsets[rank]
                 end = start + sizes[rank]
 
                 # NOTE: you must specify src_indices here for the input. Otherwise,
                 #       you'll connect the input to [0:local_input_size] of the
                 #       full distributed output!
-                self.add_input('invec', np.ones(sizes[self.comm.rank], float),
+                self.add_input('invec', np.ones(sizes[rank], float),
                                src_indices=np.arange(start, end, dtype=int))
+
                 self.add_output('out', 0.0)
 
             def compute(self, inputs, outputs):
                 data = np.zeros(1)
-                data[0] = np.sum(self._inputs['invec'])
+                data[0] = np.sum(inputs['invec'])
+
                 total = np.zeros(1)
                 self.comm.Allreduce(data, total, op=MPI.SUM)
-                self._outputs['out'] = total[0]
+
+                outputs['out'] = total[0]
 
         p = Problem(model=Group())
         top = p.model
         top.add_subsystem("indep", IndepVarComp('x', np.zeros(size)))
-        top.add_subsystem("C2", DistribComp(size))
-        top.add_subsystem("C3", Summer(size))
+        top.add_subsystem("C2", DistribComp(size=size))
+        top.add_subsystem("C3", Summer(size=size))
 
         top.connect('indep.x', 'C2.invec')
         top.connect('C2.outvec', 'C3.invec')
@@ -502,7 +693,7 @@ class TestGroupMPI(unittest.TestCase):
     def test_promote_distrib(self):
         import numpy as np
 
-        from openmdao.api import Problem, Group, ExplicitComponent, IndepVarComp
+        from openmdao.api import Problem, ExplicitComponent, IndepVarComp
 
         class MyComp(ExplicitComponent):
             def setup(self):
@@ -528,7 +719,6 @@ class TestGroupMPI(unittest.TestCase):
         p.model.add_subsystem('C1', MyComp(),
                               promotes_inputs=['x'])
 
-        p.set_solver_print(level=0)
         p.setup()
         p.run_model()
 

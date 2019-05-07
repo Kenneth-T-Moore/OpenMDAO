@@ -8,16 +8,16 @@ from io import BytesIO
 import os
 import sqlite3
 
-import warnings
 import json
 import numpy as np
 
 from six.moves import cPickle as pickle
 
-from openmdao.recorders.base_recorder import BaseRecorder
+from openmdao.recorders.case_recorder import CaseRecorder
 from openmdao.utils.mpi import MPI
 from openmdao.utils.record_util import values_to_array
 from openmdao.utils.options_dictionary import OptionsDictionary
+from openmdao.utils.general_utils import simple_warning, make_serializable
 from openmdao.core.driver import Driver
 from openmdao.core.system import System
 from openmdao.core.problem import Problem
@@ -25,21 +25,20 @@ from openmdao.solvers.solver import Solver
 
 
 """
-SQL case output format version history.
----------------------------------------
-5 -- OpenMDAO 2.4
-    More general handling of ndarray variable settings metadata.  Stores metadata keys which
-    are ndarrays in a separate 'ndarrays' entry to var_settings.
+SQL case database version history.
+----------------------------------
+5 -- OpenMDAO 2.5
+     Added source column (driver name, system/solver pathname) to global iterations table.
 4 -- OpenMDAO 2.4
-    Added variable settings metadata that contains scaling info.
+     Added variable settings metadata that contains scaling info.
 3 -- OpenMDAO 2.4
-    Storing most data as JSON rather than binary numpy arrays.
+     Storing most data as JSON rather than binary numpy arrays.
 2 -- OpenMDAO 2.4, merged 20 July 2018.
-    Added support for recording derivatives from driver, resulting in a new table.
+     Added support for recording derivatives from driver, resulting in a new table.
 1 -- Through OpenMDAO 2.3
-    Original implementation.
+     Original implementation.
 """
-format_version = 4
+format_version = 5
 
 
 def array_to_blob(array):
@@ -86,39 +85,17 @@ def blob_to_array(blob):
     """
     out = BytesIO(blob)
     out.seek(0)
-    return np.load(out)
+    return np.load(out, allow_pickle=True)
 
 
-def convert_to_list(vals):
-    """
-    Recursively convert arrays, tuples, and sets to lists.
-
-    Parameters
-    ----------
-    vals : numpy.array or list or tuple
-        the object to be converted to a list
-
-    Returns
-    -------
-    list :
-        The converted list.
-    """
-    if isinstance(vals, np.ndarray):
-        return convert_to_list(vals.tolist())
-    elif isinstance(vals, (list, tuple, set)):
-        return [convert_to_list(item) for item in vals]
-    else:
-        return vals
-
-
-class SqliteRecorder(BaseRecorder):
+class SqliteRecorder(CaseRecorder):
     """
     Recorder that saves cases in a sqlite db.
 
     Attributes
     ----------
-    model_viewer_data : dict
-        Dict that holds the data needed to generate N2 diagram.
+    _record_viewer_data : bool
+        Flag indicating whether to record data needed to generate N2 diagram.
     connection : sqlite connection object
         Connection to the sqlite3 database.
     _abs2prom : {'input': dict, 'output': dict}
@@ -138,7 +115,7 @@ class SqliteRecorder(BaseRecorder):
         Flag indicating whether to record on this processor when running in parallel.
     """
 
-    def __init__(self, filepath, append=False, pickle_version=2):
+    def __init__(self, filepath, append=False, pickle_version=2, record_viewer_data=True):
         """
         Initialize the SqliteRecorder.
 
@@ -146,16 +123,18 @@ class SqliteRecorder(BaseRecorder):
         ----------
         filepath : str
             Path to the recorder file.
-        append : bool
+        append : bool, optional
             Optional. If True, append to an existing case recorder file.
-        pickle_version : int
-            Optional. The pickle protocol version to use when pickling metadata.
+        pickle_version : int, optional
+            The pickle protocol version to use when pickling metadata.
+        record_viewer_data : bool, optional
+            If True, record data needed for visualization.
         """
         if append:
             raise NotImplementedError("Append feature not implemented for SqliteRecorder")
 
         self.connection = None
-        self.model_viewer_data = None
+        self._record_viewer_data = record_viewer_data
 
         self._abs2prom = {'input': {}, 'output': {}}
         self._prom2abs = {'input': {}, 'output': {}}
@@ -167,7 +146,7 @@ class SqliteRecorder(BaseRecorder):
         # default to record on all procs when running in parallel
         self._record_on_proc = True
 
-        super(SqliteRecorder, self).__init__()
+        super(SqliteRecorder, self).__init__(record_viewer_data)
 
     def _initialize_database(self):
         """
@@ -195,14 +174,15 @@ class SqliteRecorder(BaseRecorder):
 
             self.connection = sqlite3.connect(filepath)
             with self.connection as c:
-                c.execute("CREATE TABLE metadata( format_version INT, "
+                c.execute("CREATE TABLE metadata(format_version INT, "
                           "abs2prom TEXT, prom2abs TEXT, abs2meta TEXT, var_settings TEXT)")
                 c.execute("INSERT INTO metadata(format_version, abs2prom, prom2abs) "
                           "VALUES(?,?,?)", (format_version, None, None))
 
-                # used to keep track of the order of the case records across all three tables
+                # used to keep track of the order of the case records across all case tables
                 c.execute("CREATE TABLE global_iterations(id INTEGER PRIMARY KEY, "
-                          "record_type TEXT, rowid INT)")
+                          "record_type TEXT, rowid INT, source TEXT)")
+
                 c.execute("CREATE TABLE driver_iterations(id INTEGER PRIMARY KEY, "
                           "counter INT, iteration_coordinate TEXT, timestamp REAL, "
                           "success INT, msg TEXT, inputs TEXT, outputs TEXT)")
@@ -210,19 +190,23 @@ class SqliteRecorder(BaseRecorder):
                           "counter INT, iteration_coordinate TEXT, timestamp REAL, "
                           "success INT, msg TEXT, derivatives BLOB)")
                 c.execute("CREATE INDEX driv_iter_ind on driver_iterations(iteration_coordinate)")
+
                 c.execute("CREATE TABLE problem_cases(id INTEGER PRIMARY KEY, "
                           "counter INT, case_name TEXT, timestamp REAL, "
                           "success INT, msg TEXT, outputs TEXT)")
                 c.execute("CREATE INDEX prob_name_ind on problem_cases(case_name)")
+
                 c.execute("CREATE TABLE system_iterations(id INTEGER PRIMARY KEY, "
                           "counter INT, iteration_coordinate TEXT, timestamp REAL, "
                           "success INT, msg TEXT, inputs TEXT, outputs TEXT, residuals TEXT)")
                 c.execute("CREATE INDEX sys_iter_ind on system_iterations(iteration_coordinate)")
+
                 c.execute("CREATE TABLE solver_iterations(id INTEGER PRIMARY KEY, "
                           "counter INT, iteration_coordinate TEXT, timestamp REAL, "
                           "success INT, msg TEXT, abs_err REAL, rel_err REAL, "
                           "solver_inputs TEXT, solver_output TEXT, solver_residuals TEXT)")
                 c.execute("CREATE INDEX solv_iter_ind on solver_iterations(iteration_coordinate)")
+
                 c.execute("CREATE TABLE driver_metadata(id TEXT PRIMARY KEY, "
                           "model_viewer_data TEXT)")
                 c.execute("CREATE TABLE system_metadata(id TEXT PRIMARY KEY, "
@@ -237,17 +221,8 @@ class SqliteRecorder(BaseRecorder):
         Convert all abs2meta variable properties to a form that can be dumped as JSON.
         """
         for name in self._abs2meta:
-            if 'lower' in self._abs2meta[name]:
-                self._abs2meta[name]['lower'] = convert_to_list(self._abs2meta[name]['lower'])
-            if 'upper' in self._abs2meta[name]:
-                self._abs2meta[name]['upper'] = convert_to_list(self._abs2meta[name]['upper'])
             for prop in self._abs2meta[name]:
-                val = self._abs2meta[name][prop]
-                if isinstance(val, np.int8) or isinstance(val, np.int16) or\
-                   isinstance(val, np.int32) or isinstance(val, np.int64):
-                    self._abs2meta[name][prop] = val.item()
-                elif isinstance(val, tuple):
-                    self._abs2meta[name][prop] = [int(v) for v in val]
+                self._abs2meta[name][prop] = make_serializable(self._abs2meta[name][prop])
 
     def _cleanup_var_settings(self, var_settings):
         """
@@ -267,15 +242,7 @@ class SqliteRecorder(BaseRecorder):
         var_settings = deepcopy(var_settings)
         for name in var_settings:
             for prop in var_settings[name]:
-                val = var_settings[name][prop]
-                if isinstance(val, np.int8) or isinstance(val, np.int16) or\
-                   isinstance(val, np.int32) or isinstance(val, np.int64):
-                    var_settings[name][prop] = val.item()
-                elif isinstance(val, tuple):
-                    var_settings[name][prop] = [int(v) for v in val]
-                elif isinstance(val, np.ndarray):
-                    var_settings[name][prop] = convert_to_list(var_settings[name][prop])
-
+                var_settings[name][prop] = make_serializable(var_settings[name][prop])
         return var_settings
 
     def startup(self, recording_requester):
@@ -389,7 +356,7 @@ class SqliteRecorder(BaseRecorder):
                 if in_out is None:
                     continue
                 for var in in_out:
-                    in_out[var] = convert_to_list(in_out[var])
+                    in_out[var] = make_serializable(in_out[var])
 
             outputs_text = json.dumps(outputs)
             inputs_text = json.dumps(inputs)
@@ -403,8 +370,8 @@ class SqliteRecorder(BaseRecorder):
                            metadata['timestamp'], metadata['success'], metadata['msg'],
                            inputs_text, outputs_text))
 
-                c.execute("INSERT INTO global_iterations(record_type, rowid) VALUES(?,?)",
-                          ('driver', c.lastrowid))
+                c.execute("INSERT INTO global_iterations(record_type, rowid, source) VALUES(?,?,?)",
+                          ('driver', c.lastrowid, recording_requester._get_name()))
 
     def record_iteration_problem(self, recording_requester, data, metadata):
         """
@@ -425,7 +392,7 @@ class SqliteRecorder(BaseRecorder):
             # convert to list so this can be dumped as JSON
             if outputs is not None:
                 for var in outputs:
-                    outputs[var] = convert_to_list(outputs[var])
+                    outputs[var] = make_serializable(outputs[var])
 
             outputs_text = json.dumps(outputs)
 
@@ -461,7 +428,7 @@ class SqliteRecorder(BaseRecorder):
                 if i_o_r is None:
                     continue
                 for var in i_o_r:
-                    i_o_r[var] = convert_to_list(i_o_r[var])
+                    i_o_r[var] = make_serializable(i_o_r[var])
 
             outputs_text = json.dumps(outputs)
             inputs_text = json.dumps(inputs)
@@ -477,8 +444,13 @@ class SqliteRecorder(BaseRecorder):
                            metadata['timestamp'], metadata['success'], metadata['msg'],
                            inputs_text, outputs_text, residuals_text))
 
-                c.execute("INSERT INTO global_iterations(record_type, rowid) VALUES(?,?)",
-                          ('system', c.lastrowid))
+                # get the pathname of the source system
+                source_system = recording_requester.pathname
+                if source_system == '':
+                    source_system = 'root'
+
+                c.execute("INSERT INTO global_iterations(record_type, rowid, source) VALUES(?,?,?)",
+                          ('system', c.lastrowid, source_system))
 
     def record_iteration_solver(self, recording_requester, data, metadata):
         """
@@ -505,7 +477,7 @@ class SqliteRecorder(BaseRecorder):
                 if i_o_r is None:
                     continue
                 for var in i_o_r:
-                    i_o_r[var] = convert_to_list(i_o_r[var])
+                    i_o_r[var] = make_serializable(i_o_r[var])
 
             outputs_text = json.dumps(outputs)
             inputs_text = json.dumps(inputs)
@@ -522,28 +494,45 @@ class SqliteRecorder(BaseRecorder):
                            metadata['timestamp'], metadata['success'], metadata['msg'],
                            abs, rel, inputs_text, outputs_text, residuals_text))
 
-                c.execute("INSERT INTO global_iterations(record_type, rowid) VALUES(?,?)",
-                          ('solver', c.lastrowid))
+                # get the pathname of the source system
+                source_system = recording_requester._system.pathname
+                if source_system == '':
+                    source_system = 'root'
 
-    def record_metadata_driver(self, recording_requester):
+                # get solver type from SOLVER class attribute to determine the solver pathname
+                solver_type = recording_requester.SOLVER[0:2]
+                if solver_type == 'NL':
+                    source_solver = source_system + '.nonlinear_solver'
+                elif solver_type == 'LS':
+                    source_solver = source_system + '.nonlinear_solver.linesearch'
+                else:
+                    raise RuntimeError("Solver type '%s' not recognized during recording. "
+                                       "Expecting NL or LS" % recording_requester.SOLVER)
+
+                c.execute("INSERT INTO global_iterations(record_type, rowid, source) VALUES(?,?,?)",
+                          ('solver', c.lastrowid, source_solver))
+
+    def record_viewer_data(self, model_viewer_data, key='Driver'):
         """
-        Record driver metadata.
+        Record model viewer data.
 
         Parameters
         ----------
-        recording_requester : Driver
-            The Driver that would like to record its metadata.
+        model_viewer_data : dict
+            Data required to visualize the model.
+        key : str, optional
+            The unique ID to use for this data in the table.
         """
         if self.connection:
-            driver_class = type(recording_requester).__name__
-            model_viewer_data = json.dumps(recording_requester._model_viewer_data)
+            json_data = json.dumps(model_viewer_data, default=make_serializable)
 
+            # Note: recorded to 'driver_metadata' table for legacy/compatibility reasons.
             try:
                 with self.connection as c:
-                    c.execute("INSERT INTO driver_metadata(id, model_viewer_data) "
-                              "VALUES(?,?)", (driver_class, model_viewer_data))
+                    c.execute("INSERT INTO driver_metadata(id, model_viewer_data) VALUES(?,?)",
+                              (key, json_data))
             except sqlite3.IntegrityError:
-                print("Metadata has already been recorded for %s." % driver_class)
+                print("Model viewer data has already has already been recorded for %s." % key)
 
     def record_metadata_system(self, recording_requester):
         """
@@ -567,12 +556,12 @@ class SqliteRecorder(BaseRecorder):
                 pickled_metadata = pickle.dumps(user_options, self._pickle_version)
             except Exception:
                 pickled_metadata = pickle.dumps(OptionsDictionary(), self._pickle_version)
-                warnings.warn("Trying to record options which cannot be pickled "
-                              "on system with name: %s. Use the 'options_excludes' "
-                              "recording option on system objects to avoid attempting "
-                              "to record options which cannot be pickled. Skipping "
-                              "recording options for this system." % recording_requester.name,
-                              RuntimeWarning)
+                simple_warning("Trying to record options which cannot be pickled "
+                               "on system with name: %s. Use the 'options_excludes' "
+                               "recording option on system objects to avoid attempting "
+                               "to record options which cannot be pickled. Skipping "
+                               "recording options for this system." % recording_requester.name,
+                               RuntimeWarning)
 
             path = recording_requester.pathname
             if not path:

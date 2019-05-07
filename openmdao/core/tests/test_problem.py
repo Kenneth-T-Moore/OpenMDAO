@@ -2,18 +2,114 @@
 
 import sys
 import unittest
-import warnings
-from six import assertRaisesRegex, StringIO, assertRegex
+
+from six import assertRaisesRegex, StringIO, assertRegex, iteritems
 
 import numpy as np
 
 from openmdao.core.group import get_relevant_vars
 from openmdao.core.driver import Driver
-from openmdao.api import Problem, IndepVarComp, NonlinearBlockGS, ScipyOptimizeDriver, \
-    ExecComp, Group, NewtonSolver, ImplicitComponent, ScipyKrylov, ExplicitComponent
-from openmdao.utils.assert_utils import assert_rel_error
+from openmdao.api import Problem, IndepVarComp, NonlinearBlockGS, ScipyOptimizeDriver, DirectSolver, \
+    ExecComp, Group, NewtonSolver, ImplicitComponent, ScipyKrylov, ExplicitComponent, NonlinearRunOnce
+from openmdao.utils.assert_utils import assert_rel_error, assert_warning
 from openmdao.test_suite.components.paraboloid import Paraboloid
 from openmdao.test_suite.components.sellar import SellarDerivatives
+
+
+class SellarOneComp(ImplicitComponent):
+
+    def initialize(self):
+        self.options.declare('solve_y1', types=bool, default=True)
+        self.options.declare('solve_y2', types=bool, default=True)
+
+    def setup(self):
+
+
+        # Global Design Variable
+        self.add_input('z', val=np.array([-1., -1.]))
+
+        # Local Design Variable
+        self.add_input('x', val=2.)
+
+        self.add_output('y1', val=1.0)
+        self.add_output('y2', val=1.0)
+
+        self.add_output('R_y1')
+        self.add_output('R_y2')
+
+        if self.options['solve_y1']:
+            self.declare_partials('y1', ['x', 'z', 'y1', 'y2'])
+        else:
+            self.declare_partials('y1', 'y1')
+
+        if self.options['solve_y2']:
+            self.declare_partials('y2', ['z', 'y1', 'y2'])
+        else:
+            self.declare_partials('y2', 'y2')
+
+        self.declare_partials('R_y1', ['R_y1', 'x', 'z', 'y1', 'y2'])
+        self.declare_partials('R_y2', ['R_y2','z', 'y1', 'y2'])
+
+
+    def apply_nonlinear(self, inputs, outputs, residuals):
+
+        z0 = inputs['z'][0]
+        z1 = inputs['z'][1]
+        x = inputs['x']
+        y1 = outputs['y1']
+        y2 = outputs['y2']
+
+        if self.options['solve_y1']:
+            residuals['y1'] = (z0**2 + z1 + x - 0.2*y2) - y1
+        else:
+            residuals['y1'] = 0
+
+        if self.options['solve_y2']:
+            residuals['y2'] = (y1**.5 + z0 + z1) - y2
+        else:
+            residuals['y2'] = 0
+
+        residuals['R_y1'] = (z0**2 + z1 + x - 0.2*y2) - y1 - outputs['R_y1']
+        residuals['R_y2'] = (y1**.5 + z0 + z1) - y2 - outputs['R_y2']
+
+    def linearize(self, inputs, outputs, J):
+
+        # this will look wrong in check_partials if solve_y2 = False, but its not: R['y1'] = y1^* - y1
+        J['y1', 'y1'] = -1.
+        J['R_y1','R_y1'] = -1
+
+        if self.options['solve_y1']:
+            J['y1', 'x'] = [1]
+            J['y1', 'z'] = [2*inputs['z'][0], 1]
+            J['y1', 'y2'] = -0.2
+
+        J['R_y1', 'x'] = [1]
+        J['R_y1', 'z'] = [2*inputs['z'][0], 1]
+        J['R_y1', 'y1'] = -1.
+        J['R_y1', 'y2'] = -0.2
+
+        # this will look wrong in check_partials if solve_y2 = False, but its not" R['y1'] = y2^* - y2
+        J['y2','y2'] = -1
+
+        J['R_y2','R_y2'] = -1
+        if self.options['solve_y2']:
+            J['y2','z'] = [1, 1]
+            J['y2','y1'] = 0.5*outputs['y1']**-0.5
+
+        J['R_y2','y2'] = -1
+        J['R_y2','z'] = [1, 1]
+        J['R_y2','y1'] = 0.5*outputs['y1']**-0.5
+
+
+    def solve_nonlinear(self, inputs, outputs):
+        z0 = inputs['z'][0]
+        z1 = inputs['z'][1]
+        x = inputs['x']
+        y1 = outputs['y1']
+        y2 = outputs['y2']
+
+        outputs['R_y1'] = (z0**2 + z1 + x - 0.2*y2) - y1
+        outputs['R_y2'] = (y1**.5 + z0 + z1) - y2
 
 
 class TestProblem(unittest.TestCase):
@@ -23,7 +119,7 @@ class TestProblem(unittest.TestCase):
         from openmdao.test_suite.components.paraboloid import Paraboloid
 
         prob = Problem()
-        model = prob.model = Group()
+        model = prob.model
 
         model.add_subsystem('p1', IndepVarComp('x', 3.0))
         model.add_subsystem('p2', IndepVarComp('y', -4.0))
@@ -42,7 +138,7 @@ class TestProblem(unittest.TestCase):
         from openmdao.test_suite.components.paraboloid import Paraboloid
 
         prob = Problem()
-        model = prob.model = Group()
+        model = prob.model
 
         model.add_subsystem('p1', IndepVarComp('x', 3.0))
 
@@ -64,7 +160,7 @@ class TestProblem(unittest.TestCase):
         from openmdao.test_suite.components.paraboloid import Paraboloid
 
         prob = Problem()
-        model = prob.model = Group()
+        model = prob.model
 
         model.add_subsystem('p1', IndepVarComp('x', 3.0))
         model.add_subsystem('p2', IndepVarComp('y', -4.0))
@@ -89,7 +185,7 @@ class TestProblem(unittest.TestCase):
         from openmdao.test_suite.components.paraboloid import Paraboloid
 
         prob = Problem()
-        model = prob.model = Group()
+        model = prob.model
 
         model.add_subsystem('p1', IndepVarComp('x', 3.0))
         model.add_subsystem('p2', IndepVarComp('y', -4.0))
@@ -114,7 +210,7 @@ class TestProblem(unittest.TestCase):
         from openmdao.test_suite.components.paraboloid import Paraboloid
 
         prob = Problem()
-        model = prob.model = Group()
+        model = prob.model
 
         model.add_subsystem('p1', IndepVarComp('x', 3.0))
         model.add_subsystem('p2', IndepVarComp('y', -4.0))
@@ -157,15 +253,15 @@ class TestProblem(unittest.TestCase):
         assert_rel_error(self, J[('MP2.y', 'indeps2.x')], np.eye(3)*-3., 1e-10)
         # before the bug fix, the following two derivs contained nonzero values even
         # though the variables involved were not dependent on each other.
-        assert_rel_error(self, J[('MP2.y', 'indeps1.x')], np.zeros((3,5)), 1e-10)
-        assert_rel_error(self, J[('MP1.y', 'indeps2.x')], np.zeros((5,3)), 1e-10)
+        assert_rel_error(self, J[('MP2.y', 'indeps1.x')], np.zeros((3, 5)), 1e-10)
+        assert_rel_error(self, J[('MP1.y', 'indeps2.x')], np.zeros((5, 3)), 1e-10)
 
     def test_set_2d_array(self):
         import numpy as np
 
         from openmdao.api import Problem, IndepVarComp, Group
 
-        prob = Problem(model=Group())
+        prob = Problem()
         model = prob.model
         model.add_subsystem(name='indeps',
                             subsys=IndepVarComp(name='X_c', shape=(3, 1)))
@@ -239,7 +335,7 @@ class TestProblem(unittest.TestCase):
         # Basic test for the method using default solvers on simple model.
 
         prob = Problem()
-        model = prob.model = Group()
+        model = prob.model
         model.add_subsystem('p1', IndepVarComp('x', 0.0), promotes=['x'])
         model.add_subsystem('p2', IndepVarComp('y', 0.0), promotes=['y'])
         model.add_subsystem('comp', Paraboloid(), promotes=['x', 'y', 'f_xy'])
@@ -269,7 +365,7 @@ class TestProblem(unittest.TestCase):
         # Make sure 'dict' return_format works.
 
         prob = Problem()
-        model = prob.model = Group()
+        model = prob.model
         model.add_subsystem('p1', IndepVarComp('x', 0.0), promotes=['x'])
         model.add_subsystem('p2', IndepVarComp('y', 0.0), promotes=['y'])
         model.add_subsystem('comp', Paraboloid(), promotes=['x', 'y', 'f_xy'])
@@ -294,6 +390,48 @@ class TestProblem(unittest.TestCase):
 
         assert_rel_error(self, derivs['f_xy']['x'], [[-6.0]], 1e-6)
         assert_rel_error(self, derivs['f_xy']['y'], [[8.0]], 1e-6)
+
+    def test_compute_totals_no_args_no_desvar(self):
+        p = Problem()
+
+        dv = p.model.add_subsystem('des_vars', IndepVarComp())
+        dv.add_output('x', val=2.)
+
+        p.model.add_subsystem('calc', ExecComp('y=2*x'))
+
+        p.model.connect('des_vars.x', 'calc.x')
+
+        p.model.add_objective('calc.y')
+
+        p.setup()
+        p.run_model()
+
+        with self.assertRaises(RuntimeError) as cm:
+            p.compute_totals()
+
+        self.assertEqual(str(cm.exception),
+                         "Driver is not providing any design variables for compute_totals.")
+
+    def test_compute_totals_no_args_no_response(self):
+        p = Problem()
+
+        dv = p.model.add_subsystem('des_vars', IndepVarComp())
+        dv.add_output('x', val=2.)
+
+        p.model.add_subsystem('calc', ExecComp('y=2*x'))
+
+        p.model.connect('des_vars.x', 'calc.x')
+
+        p.model.add_design_var('des_vars.x')
+
+        p.setup()
+        p.run_model()
+
+        with self.assertRaises(RuntimeError) as cm:
+            p.compute_totals()
+
+        self.assertEqual(str(cm.exception),
+                         "Driver is not providing any response variables for compute_totals.")
 
     def test_compute_totals_no_args(self):
         p = Problem()
@@ -339,7 +477,7 @@ class TestProblem(unittest.TestCase):
 
         prob = Problem()
 
-        model = prob.model = Group()
+        model = prob.model
         model.add_subsystem('p1', IndepVarComp('x', 0.0), promotes=['x'])
         model.add_subsystem('p2', IndepVarComp('y', 0.0), promotes=['y'])
         model.add_subsystem('comp', Paraboloid(), promotes=['x', 'y', 'f_xy'])
@@ -356,7 +494,7 @@ class TestProblem(unittest.TestCase):
         from openmdao.test_suite.components.paraboloid import Paraboloid
 
         prob = Problem()
-        model = prob.model = Group()
+        model = prob.model
         model.add_subsystem('p1', IndepVarComp('x', 0.0), promotes=['x'])
         model.add_subsystem('p2', IndepVarComp('y', 0.0), promotes=['y'])
         model.add_subsystem('comp', Paraboloid(), promotes=['x', 'y', 'f_xy'])
@@ -386,7 +524,7 @@ class TestProblem(unittest.TestCase):
         from openmdao.test_suite.components.paraboloid import Paraboloid
 
         prob = Problem()
-        model = prob.model = Group()
+        model = prob.model
         model.add_subsystem('p1', IndepVarComp('x', 0.0), promotes=['x'])
         model.add_subsystem('p2', IndepVarComp('y', 0.0), promotes=['y'])
         model.add_subsystem('comp', Paraboloid(), promotes=['x', 'y', 'f_xy'])
@@ -526,8 +664,11 @@ class TestProblem(unittest.TestCase):
         # actually want the optimizer to run
         prob.run_model()
 
-        # check derivatives with complex step and a larger step size.
-        prob.check_totals(method='cs', step=1.0e-1)
+        prob.model.nonlinear_solver.options['atol'] = 1e-15
+        prob.model.nonlinear_solver.options['rtol'] = 1e-15
+
+        # check derivatives with complex step
+        prob.check_totals(method='cs')
 
     def test_check_totals_user_detect(self):
 
@@ -551,9 +692,7 @@ class TestProblem(unittest.TestCase):
             def compute_partials(self, inputs, partials):
                 partials['y', 'x'] = 3.
 
-
         prob = Problem()
-        prob.model = Group()
         prob.model.add_subsystem('px', IndepVarComp('x', 2.0))
         prob.model.add_subsystem('comp', SimpleComp())
         prob.model.connect('px.x', 'comp.x')
@@ -571,7 +710,7 @@ class TestProblem(unittest.TestCase):
                          msg="The under_complex_step flag should be reset.")
 
     def test_feature_check_totals_user_detect_forced(self):
-        from openmdao.api import Problem, ExplicitComponent
+        from openmdao.api import Problem, ExplicitComponent, IndepVarComp
 
         class SimpleComp(ExplicitComponent):
 
@@ -590,9 +729,7 @@ class TestProblem(unittest.TestCase):
             def compute_partials(self, inputs, partials):
                 partials['y', 'x'] = 3.
 
-
         prob = Problem()
-        prob.model = Group()
         prob.model.add_subsystem('px', IndepVarComp('x', val=1.0))
         prob.model.add_subsystem('comp', SimpleComp())
         prob.model.connect('px.x', 'comp.x')
@@ -612,8 +749,8 @@ class TestProblem(unittest.TestCase):
         from openmdao.api import Problem, NonlinearBlockGS, ScipyOptimizeDriver
         from openmdao.test_suite.components.sellar import SellarDerivatives
 
-        prob = Problem()
-        model = prob.model = SellarDerivatives()
+        prob = Problem(model=SellarDerivatives())
+        model = prob.model
         model.nonlinear_solver = NonlinearBlockGS()
 
         prob.driver = ScipyOptimizeDriver()
@@ -639,8 +776,7 @@ class TestProblem(unittest.TestCase):
         from openmdao.api import Problem, NonlinearBlockGS
         from openmdao.test_suite.components.sellar import SellarDerivatives
 
-        prob = Problem()
-        prob.model = SellarDerivatives()
+        prob = Problem(model=SellarDerivatives())
         prob.model.nonlinear_solver = NonlinearBlockGS()
 
         prob.setup()
@@ -657,8 +793,7 @@ class TestProblem(unittest.TestCase):
         from openmdao.api import Problem, NonlinearBlockGS
         from openmdao.test_suite.components.sellar import SellarDerivativesConnected
 
-        prob = Problem()
-        prob.model = SellarDerivativesConnected()
+        prob = Problem(model= SellarDerivativesConnected())
         prob.model.nonlinear_solver = NonlinearBlockGS()
 
         prob.setup()
@@ -675,8 +810,7 @@ class TestProblem(unittest.TestCase):
         from openmdao.api import Problem, NonlinearBlockGS
         from openmdao.test_suite.components.sellar import SellarDerivatives
 
-        prob = Problem()
-        prob.model = SellarDerivatives()
+        prob = Problem(model=SellarDerivatives())
         prob.model.nonlinear_solver = NonlinearBlockGS()
 
         prob.setup()
@@ -698,17 +832,17 @@ class TestProblem(unittest.TestCase):
         prob = Problem()
         prob.model.add_subsystem('comp', ExecComp('y=x-25.',
                                                   x={'value': 77.0, 'units': 'degF'},
-                                                  y={'units': 'degC'}))
+                                                  y={'value': 0.0, 'units': 'degC'}))
         prob.model.add_subsystem('prom', ExecComp('yy=xx-25.',
                                                   xx={'value': 77.0, 'units': 'degF'},
-                                                  yy={'units': 'degC'}),
+                                                  yy={'value': 0.0, 'units': 'degC'}),
                                  promotes=['xx', 'yy'])
         prob.model.add_subsystem('acomp', ExecComp('y=x-25.',
                                                    x={'value': np.array([77.0, 95.0]), 'units': 'degF'},
-                                                   y={'units': 'degC'}))
+                                                   y={'value': 0.0, 'units': 'degC'}))
         prob.model.add_subsystem('aprom', ExecComp('ayy=axx-25.',
                                                    axx={'value': np.array([77.0, 95.0]), 'units': 'degF'},
-                                                   ayy={'units': 'degC'}),
+                                                   ayy={'value': 0.0, 'units': 'degC'}),
                                  promotes=['axx', 'ayy'])
 
         prob.setup(check=False)
@@ -819,19 +953,19 @@ class TestProblem(unittest.TestCase):
         prob.setup()
         prob.run_model()
 
-        msg = "Incompatible units for conversion: 'cm' and 'degK'."
+        msg = "Can't express variable 'comp.x' with units of 'cm' in units of 'degK'."
         with assertRaisesRegex(self, TypeError, msg):
             prob.get_val('comp.x', 'degK')
 
-        msg = "Incompatible units for conversion: 'degK' and 'cm'."
+        msg = "Can't set variable 'comp.x' with units of 'cm' to value with units of 'degK'."
         with assertRaisesRegex(self, TypeError, msg):
             prob.set_val('comp.x', 55.0, 'degK')
 
-        msg = "Incompatible units for conversion: 'None' and 'degK'."
+        msg = "Can't express variable 'no_unit.x' with units of 'None' in units of 'degK'."
         with assertRaisesRegex(self, TypeError, msg):
             prob.get_val('no_unit.x', 'degK')
 
-        msg = "Incompatible units for conversion: 'degK' and 'None'."
+        msg = "Can't set variable 'no_unit.x' with units of 'None' to value with units of 'degK'."
         with assertRaisesRegex(self, TypeError, msg):
             prob.set_val('no_unit.x', 55.0, 'degK')
 
@@ -853,6 +987,7 @@ class TestProblem(unittest.TestCase):
         assert_rel_error(self, prob.get_val('comp.x', 'm'), 1.0e-2, 1e-6)
 
     def test_feature_get_set_array_with_units(self):
+        import numpy as np
         from openmdao.api import Problem, ExecComp
 
         prob = Problem()
@@ -881,8 +1016,7 @@ class TestProblem(unittest.TestCase):
         from openmdao.api import Problem, NonlinearBlockGS
         from openmdao.test_suite.components.sellar import SellarDerivatives
 
-        prob = Problem()
-        prob.model = SellarDerivatives()
+        prob = Problem(model=SellarDerivatives())
         prob.model.nonlinear_solver = NonlinearBlockGS()
 
         prob.setup()
@@ -914,8 +1048,7 @@ class TestProblem(unittest.TestCase):
         from openmdao.api import Problem, NonlinearBlockGS
         from openmdao.test_suite.components.sellar import SellarDerivatives
 
-        prob = Problem()
-        prob.model = SellarDerivatives()
+        prob = Problem(model=SellarDerivatives())
         prob.model.nonlinear_solver = NonlinearBlockGS()
 
         prob.setup()
@@ -954,15 +1087,12 @@ class TestProblem(unittest.TestCase):
 
         prob.setup(mode='fwd')
 
-        with warnings.catch_warnings(record=True) as w:
-            prob.final_setup()
+        msg = "Inefficient choice of derivative mode.  " \
+              "You chose 'fwd' for a problem with 99 design variables and 10 " \
+              "response variables (objectives and nonlinear constraints)."
 
-        self.assertEqual(len(w), 1)
-        self.assertTrue(issubclass(w[0].category, RuntimeWarning))
-        self.assertEqual(str(w[0].message),
-                         "Inefficient choice of derivative mode.  "
-                         "You chose 'fwd' for a problem with 99 design variables and 10 "
-                         "response variables (objectives and nonlinear constraints).")
+        with assert_warning(RuntimeWarning, msg):
+            prob.final_setup()
 
     def test_setup_bad_mode_direction_rev(self):
 
@@ -979,15 +1109,12 @@ class TestProblem(unittest.TestCase):
 
         prob.setup(mode='rev')
 
-        with warnings.catch_warnings(record=True) as w:
-            prob.final_setup()
+        msg = "Inefficient choice of derivative mode.  " \
+              "You chose 'rev' for a problem with 10 design variables and 20 " \
+              "response variables (objectives and nonlinear constraints)."
 
-        self.assertEqual(len(w), 1)
-        self.assertTrue(issubclass(w[0].category, RuntimeWarning))
-        self.assertEqual(str(w[0].message),
-                         "Inefficient choice of derivative mode.  "
-                         "You chose 'rev' for a problem with 10 design variables and 20 "
-                         "response variables (objectives and nonlinear constraints).")
+        with assert_warning(RuntimeWarning, msg):
+            prob.final_setup()
 
     def test_run_before_setup(self):
         # Test error message when running before setup.
@@ -1036,25 +1163,16 @@ class TestProblem(unittest.TestCase):
     def test_root_deprecated(self):
         # testing the root property
         msg = "The 'root' property provides backwards compatibility " \
-            + "with OpenMDAO <= 1.x ; use 'model' instead."
+              "with OpenMDAO <= 1.x ; use 'model' instead."
 
         prob = Problem()
 
-        # check deprecation on setter
-        with warnings.catch_warnings(record=True) as w:
+        # check deprecation on setter & getter
+        with assert_warning(DeprecationWarning, msg):
             prob.root = Group()
 
-        self.assertEqual(len(w), 1)
-        self.assertTrue(issubclass(w[0].category, DeprecationWarning))
-        self.assertEqual(str(w[0].message), msg)
-
-        # check deprecation on getter
-        with warnings.catch_warnings(record=True) as w:
+        with assert_warning(DeprecationWarning, msg):
             prob.root
-
-        self.assertEqual(len(w), 1)
-        self.assertTrue(issubclass(w[0].category, DeprecationWarning))
-        self.assertEqual(str(w[0].message), msg)
 
         # testing the root kwarg
         with self.assertRaises(ValueError) as cm:
@@ -1064,11 +1182,11 @@ class TestProblem(unittest.TestCase):
                          "Cannot specify both 'root' and 'model'. "
                          "'root' has been deprecated, please use 'model'.")
 
-        with warnings.catch_warnings(record=True) as w:
-            prob = Problem(root=Group())
+        msg = "The 'root' argument provides backwards " \
+              "compatibility with OpenMDAO <= 1.x ; use 'model' instead."
 
-        self.assertEqual(str(w[0].message), "The 'root' argument provides backwards "
-                         "compatibility with OpenMDAO <= 1.x ; use 'model' instead.")
+        with assert_warning(DeprecationWarning, msg):
+            prob = Problem(root=Group())
 
     def test_args(self):
         # defaults
@@ -1136,7 +1254,8 @@ class TestProblem(unittest.TestCase):
 
         p.setup(check=False, mode='rev')
 
-        relevant = get_relevant_vars(model._conn_global_abs_in2out, ['indep1.x', 'indep2.x'],
+        relevant = get_relevant_vars(model._conn_global_abs_in2out,
+                                     ['indep1.x', 'indep2.x'],
                                      ['C8.y', 'Unconnected.y'], mode='rev')
 
         indep1_ins = set(['C3.b', 'C3.c', 'C8.b', 'G1.C1.a', 'G2.C5.a', 'G2.C5.b'])
@@ -1187,6 +1306,49 @@ class TestProblem(unittest.TestCase):
         self.assertEqual(outputs, indep1_outs | indep2_outs)
         self.assertEqual(systems, indep1_sys | indep2_sys)
 
+    def test_relevance_with_component_model(self):
+        # Test relevance when model is a Component
+        SOLVE_Y1 = False
+        SOLVE_Y2 = True
+
+        p_opt = Problem()
+
+        p_opt.model = SellarOneComp(solve_y1=SOLVE_Y1, solve_y2=SOLVE_Y2)
+
+        if SOLVE_Y1 or SOLVE_Y2:
+            newton = p_opt.model.nonlinear_solver = NewtonSolver()
+            newton.options['iprint'] = 0
+
+        # NOTE: need to have this direct solver attached to the sellar comp until I define a solve_linear for it
+        p_opt.model.linear_solver = DirectSolver(assemble_jac=True)
+
+        p_opt.driver = ScipyOptimizeDriver()
+        p_opt.driver.options['disp'] = False
+
+        if not SOLVE_Y1:
+            p_opt.model.add_design_var('y1', lower=-10, upper=10)
+            p_opt.model.add_constraint('R_y1', equals=0)
+
+        if not SOLVE_Y2:
+            p_opt.model.add_design_var('y2', lower=-10, upper=10)
+            p_opt.model.add_constraint('R_y2', equals=0)
+
+        # this objective doesn't really matter... just need something there
+        p_opt.model.add_objective('y2')
+
+        p_opt.setup()
+
+        # set
+        p_opt['y2'] = 5
+        p_opt['y1'] = 5
+
+        p_opt.run_driver()
+
+        np.testing.assert_almost_equal(p_opt['y1'][0], 2.109516506074582, decimal=5)
+        np.testing.assert_almost_equal(p_opt['y2'][0], -0.5475825303740725, decimal=5)
+        np.testing.assert_almost_equal(p_opt['x'][0], 2.0, decimal=5)
+        np.testing.assert_almost_equal(p_opt['z'], np.array([-1., -1.]), decimal=5)
+
     def test_system_setup_and_configure(self):
         # Test that we can change solver settings on a subsystem in a system's setup method.
         # Also assures that highest system's settings take precedence.
@@ -1228,8 +1390,7 @@ class TestProblem(unittest.TestCase):
                 self.sub.nonlinear_solver = NewtonSolver()
                 self.sub.linear_solver = ScipyKrylov()
 
-        top = Problem()
-        top.model = Super()
+        top = Problem(model=Super())
 
         top.setup(check=False)
 
@@ -1271,8 +1432,7 @@ class TestProblem(unittest.TestCase):
             def setup(self):
                 self.add_subsystem('sub', Sub())
 
-        top = Problem()
-        top.model = Super()
+        top = Problem(model=Super())
 
         top.setup(check=False)
 
@@ -1306,7 +1466,7 @@ class TestProblem(unittest.TestCase):
                 self.add_subsystem('comp', ImplSimple())
 
             def configure(self):
-                # This solver won't solve the sytem. We want
+                # This solver won't solve the system. We want
                 # to override it in the parent.
                 self.nonlinear_solver = NonlinearBlockGS()
 
@@ -1319,8 +1479,7 @@ class TestProblem(unittest.TestCase):
                 self.sub.nonlinear_solver = NewtonSolver()
                 self.sub.linear_solver = ScipyKrylov()
 
-        top = Problem()
-        top.model = Super()
+        top = Problem(model=Super())
 
         top.setup(check=False)
 
@@ -1362,8 +1521,7 @@ class TestProblem(unittest.TestCase):
             def setup(self):
                 self.add_subsystem('sub', Sub())
 
-        top = Problem()
-        top.model = Super()
+        top = Problem(model=Super())
 
         top.setup(check=False)
 
@@ -1399,11 +1557,10 @@ class TestProblem(unittest.TestCase):
             Problem._post_setup_func = None
 
     def test_list_problem_vars(self):
-
-        prob = Problem()
-        model = prob.model = SellarDerivatives()
+        model = SellarDerivatives()
         model.nonlinear_solver = NonlinearBlockGS()
 
+        prob = Problem(model)
         prob.driver = ScipyOptimizeDriver()
         prob.driver.options['optimizer'] = 'SLSQP'
         prob.driver.options['tol'] = 1e-9
@@ -1426,12 +1583,12 @@ class TestProblem(unittest.TestCase):
         finally:
             sys.stdout = stdout
         output = strout.getvalue().split('\n')
-        self.assertEquals(output[1], 'Design Variables')
-        assertRegex(self, output[5], '^pz.z +\|[0-9. e+-]+\| +2')
-        self.assertEquals(output[9], 'Constraints')
-        assertRegex(self, output[14], '^con_cmp2.con2 +\[[0-9. e+-]+\] +1')
-        self.assertEquals(output[17], 'Objectives')
-        assertRegex(self, output[21], '^obj_cmp.obj +\[[0-9. e+-]+\] +1')
+        self.assertEquals(output[1], r'Design Variables')
+        assertRegex(self, output[5], r'^pz.z +\|[0-9. e+-]+\| +2')
+        self.assertEquals(output[9], r'Constraints')
+        assertRegex(self, output[14], r'^con_cmp2.con2 +\[[0-9. e+-]+\] +1')
+        self.assertEquals(output[17], r'Objectives')
+        assertRegex(self, output[21], r'^obj_cmp.obj +\[[0-9. e+-]+\] +1')
 
         # With show_promoted_name=False
         stdout = sys.stdout
@@ -1442,9 +1599,9 @@ class TestProblem(unittest.TestCase):
         finally:
             sys.stdout = stdout
         output = strout.getvalue().split('\n')
-        assertRegex(self, output[5], '^z +\|[0-9. e+-]+\| +2')
-        assertRegex(self, output[14], '^con2 +\[[0-9. e+-]+\] +1')
-        assertRegex(self, output[21], '^obj +\[[0-9. e+-]+\] +1')
+        assertRegex(self, output[5], r'^z +\|[0-9. e+-]+\| +2')
+        assertRegex(self, output[14], r'^con2 +\[[0-9. e+-]+\] +1')
+        assertRegex(self, output[21], r'^obj +\[[0-9. e+-]+\] +1')
 
         # With all the optional columns
         stdout = sys.stdout
@@ -1472,12 +1629,12 @@ class TestProblem(unittest.TestCase):
             sys.stdout = stdout
         output = strout.getvalue().split('\n')
         assertRegex(self, output[3],
-                    '^name\s+value\s+size\s+lower\s+upper\s+ref\s+ref0\s+'
-                    'indices\s+adder\s+scaler\s+parallel_deriv_color\s+'
-                    'vectorize_derivs\s+cache_linear_solution')
+                    r'^name\s+value\s+size\s+lower\s+upper\s+ref\s+ref0\s+'
+                    r'indices\s+adder\s+scaler\s+parallel_deriv_color\s+'
+                    r'vectorize_derivs\s+cache_linear_solution')
         assertRegex(self, output[5],
-                    '^pz.z\s+\|[0-9.e+-]+\|\s+2\s+\|10.0\|\s+\|[0-9.e+-]+\|\s+None\s+'
-                    'None\s+None\s+None\s+None\s+None\s+False\s+False')
+                    r'^pz.z\s+\|[0-9.e+-]+\|\s+2\s+\|10.0\|\s+\|[0-9.e+-]+\|\s+None\s+'
+                    r'None\s+None\s+None\s+None\s+None\s+False\s+False')
 
         # With all the optional columns and print_arrays
         stdout = sys.stdout
@@ -1504,20 +1661,20 @@ class TestProblem(unittest.TestCase):
         finally:
             sys.stdout = stdout
         output = strout.getvalue().split('\n')
-        assertRegex(self, output[6], '^\s+value:')
-        assertRegex(self, output[7], '^\s+\[[0-9. e+-]+\]')
-        assertRegex(self, output[9], '^\s+lower:')
-        assertRegex(self, output[10], '^\s+\[[0-9. e+-]+\]')
-        assertRegex(self, output[12], '^\s+upper:')
-        assertRegex(self, output[13], '^\s+\[[0-9. e+-]+\]')
+        assertRegex(self, output[6], r'^\s+value:')
+        assertRegex(self, output[7], r'^\s+\[[0-9. e+-]+\]')
+        assertRegex(self, output[9], r'^\s+lower:')
+        assertRegex(self, output[10], r'^\s+\[[0-9. e+-]+\]')
+        assertRegex(self, output[12], r'^\s+upper:')
+        assertRegex(self, output[13], r'^\s+\[[0-9. e+-]+\]')
 
     def test_feature_list_problem_vars(self):
         import numpy as np
         from openmdao.api import Problem, ScipyOptimizeDriver, NonlinearBlockGS
         from openmdao.test_suite.components.sellar import SellarDerivatives
 
-        prob = Problem()
-        model = prob.model = SellarDerivatives()
+        prob = Problem(model=SellarDerivatives())
+        model = prob.model
         model.nonlinear_solver = NonlinearBlockGS()
 
         prob.driver = ScipyOptimizeDriver()
@@ -1546,6 +1703,33 @@ class TestProblem(unittest.TestCase):
                                           'vectorize_derivs',
                                           'cache_linear_solution'],
                                )
+
+class NestedProblemTestCase(unittest.TestCase):
+
+    def test_nested_prob(self):
+
+        class _ProblemSolver(NonlinearRunOnce):
+            def solve(self):
+                # create a simple subproblem and run it to test for global solver_info bug
+                p = Problem()
+                p.model.add_subsystem('indep', IndepVarComp('x', 1.0))
+                p.model.add_subsystem('comp', ExecComp('y=2*x'))
+                p.model.connect('indep.x', 'comp.x')
+                p.setup()
+                p.run_model()
+
+                return super(_ProblemSolver, self).solve()
+
+        p = Problem()
+        p.model.add_subsystem('indep', IndepVarComp('x', 1.0))
+        G = p.model.add_subsystem('G', Group())
+        G.add_subsystem('comp', ExecComp('y=2*x'))
+        G.nonlinear_solver = _ProblemSolver()
+        p.model.connect('indep.x', 'G.comp.x')
+        p.setup()
+        p.run_model()
+
+
 
 
 if __name__ == "__main__":

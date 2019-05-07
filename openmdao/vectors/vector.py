@@ -58,7 +58,7 @@ class Vector(object):
     _root_vector : Vector
         Pointer to the vector owned by the root system.
     _alloc_complex : Bool
-        If True, then space for the imaginary part is also allocated.
+        If True, then space for the complex vector is also allocated.
     _data : ndarray
         Actual allocated data.
     _cplx_data : ndarray
@@ -82,13 +82,13 @@ class Vector(object):
         True if this vector performs scaling.
     _scaling : dict
         Contains scale factors to convert data arrays.
-    cite : str
-        Listing of relevant citataions that should be referenced when
-        publishing work that uses this class.
     read_only : bool
         When True, values in the vector cannot be changed via the user __setitem__ API.
+    _under_complex_step : bool
+        When True, self._data is replaced with self._cplx_data.
     """
 
+    # Listing of relevant citations that should be referenced when
     cite = ""
 
     def __init__(self, name, kind, system, root_vector=None, resize=False, alloc_complex=False,
@@ -164,7 +164,7 @@ class Vector(object):
         self._initialize_data(root_vector)
         self._initialize_views()
 
-        self._length = np.sum(self._system._var_sizes[name][self._typ][self._iproc, :])
+        self._length = np.sum(system._var_sizes[name][self._typ][self._iproc, :])
 
         self.read_only = False
 
@@ -209,12 +209,14 @@ class Vector(object):
         """
         vec = self.__class__(self._name, self._kind, self._system, self._root_vector,
                              alloc_complex=self._alloc_complex, ncol=self._ncol)
+        vec._under_complex_step = self._under_complex_step
         vec._clone_data()
         if initialize_views:
             vec._initialize_views()
         return vec
 
     def _copy_views(self):
+<<<<<<< HEAD
         """
         Return a lightweight object containing the views.
 
@@ -233,20 +235,17 @@ class Vector(object):
         return vec_cp
 
     def _contains_abs(self, abs_name):
+=======
+>>>>>>> e1eee12cb0e1f213c9fb98349e09f9a563f941e5
         """
-        Check if the variable is involved in the current mat-vec product.
-
-        Parameters
-        ----------
-        abs_name : str
-            Absolute variable name in the owning system's namespace.
+        Return a dictionary containing just the views.
 
         Returns
         -------
-        boolean
-            True or False.
+        dict
+            Dictionary containing the _views.
         """
-        return abs_name in self._names
+        return deepcopy(self._views)
 
     def keys(self):
         """
@@ -268,10 +267,11 @@ class Vector(object):
         listiterator
             iterator over the variable names.
         """
-        path = self._system.pathname
+        system = self._system
+        path = system.pathname
         idx = len(path) + 1 if path else 0
 
-        return (n[idx:] for n in self._system._var_abs_names[self._typ] if n in self._names)
+        return (n[idx:] for n in system._var_abs_names[self._typ] if n in self._names)
 
     def __contains__(self, name):
         """
@@ -582,7 +582,7 @@ class Vector(object):
         print('-' * 35)
         print()
 
-    def set_complex_step_mode(self, active):
+    def set_complex_step_mode(self, active, keep_real=False):
         """
         Turn on or off complex stepping mode.
 
@@ -593,9 +593,16 @@ class Vector(object):
         ----------
         active : bool
             Complex mode flag; set to True prior to commencing complex step.
+
+        keep_real : bool
+            When this flag is True, keep the real value when turning off complex step. You only
+            need to do this when temporarily disabling complex step for guess_nonlinear.
         """
         if active:
             self._cplx_data[:] = self._data
+
+        elif keep_real:
+            self._cplx_data[:] = self._data.real
 
         self._data, self._cplx_data = self._cplx_data, self._data
         self._views, self._cplx_views = self._cplx_views, self._views

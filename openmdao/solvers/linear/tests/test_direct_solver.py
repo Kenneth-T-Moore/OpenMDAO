@@ -3,16 +3,17 @@
 from __future__ import division, print_function
 
 import unittest
-from six import iteritems
+from six import assertRaisesRegex, iteritems
 
 import numpy as np
 
 from openmdao.api import Problem, Group, IndepVarComp, DirectSolver, NewtonSolver, ExecComp, \
      NewtonSolver, BalanceComp, ExplicitComponent, ImplicitComponent
-from openmdao.utils.assert_utils import assert_rel_error
 from openmdao.solvers.linear.tests.linear_test_base import LinearSolverTests
+from openmdao.test_suite.components.expl_comp_simple import TestExplCompSimpleJacVec
 from openmdao.test_suite.components.sellar import SellarDerivatives
 from openmdao.test_suite.groups.implicit_group import TestImplicitGroup
+from openmdao.utils.assert_utils import assert_rel_error
 
 
 class NanComp(ExplicitComponent):
@@ -68,8 +69,8 @@ class DupPartialsComp(ExplicitComponent):
         self.add_input('c', np.zeros(19))
         self.add_output('x', np.zeros(11))
 
-        rows = [0, 1, 4, 10, 7, 9, 10]
-        cols = [0, 18, 11, 2, 5, 9, 2]
+        rows = [0,  1,  4, 10, 7, 9, 10, 4]
+        cols = [0, 18, 11,  2, 5, 9,  2, 11]
         self.declare_partials(of='x', wrt='c', rows=rows, cols=cols)
 
     def compute(self, inputs, outputs):
@@ -77,6 +78,7 @@ class DupPartialsComp(ExplicitComponent):
 
     def compute_partials(self, inputs, partials):
         pass
+
 
 class TestDirectSolver(LinearSolverTests.LinearSolverTestCase):
 
@@ -87,7 +89,7 @@ class TestDirectSolver(LinearSolverTests.LinearSolverTestCase):
         # Test that using options that should not exist in class cause an error
         solver = DirectSolver()
 
-        msg = "\"Key '%s' cannot be set because it has not been declared.\""
+        msg = "\"Option '%s' cannot be set because it has not been declared.\""
 
         for option in ['atol', 'rtol', 'maxiter', 'err_on_maxiter']:
             with self.assertRaises(KeyError) as context:
@@ -107,6 +109,8 @@ class TestDirectSolver(LinearSolverTests.LinearSolverTestCase):
         g1 = model.add_subsystem('g1', TestImplicitGroup(lnSolverClass=DirectSolver))
 
         p.setup(check=False)
+
+        g1.linear_solver.options['assemble_jac'] = False
 
         p.set_solver_print(level=0)
 
@@ -170,6 +174,23 @@ class TestDirectSolver(LinearSolverTests.LinearSolverTestCase):
         assert_rel_error(self, prob['y1'], 25.58830273, .00001)
         assert_rel_error(self, prob['y2'], 12.05848819, .00001)
 
+    def test_multi_dim_src_indices(self):
+        prob = Problem()
+        model = prob.model
+        size = 5
+
+        model.add_subsystem('indeps', IndepVarComp('x', np.arange(5).reshape((1,size,1))))
+        model.add_subsystem('comp', ExecComp('y = x * 2.', x=np.zeros((size,)), y=np.zeros((size,))))
+        src_indices = [[0, i, 0] for i in range(size)]
+        model.connect('indeps.x', 'comp.x', src_indices=src_indices)
+
+        model.linear_solver = DirectSolver()
+        prob.setup()
+        prob.run_model()
+
+        J = prob.compute_totals(wrt=['indeps.x'], of=['comp.y'], return_format='array')
+        np.testing.assert_almost_equal(J, np.eye(size) * 2.)
+
     def test_raise_error_on_singular(self):
         prob = Problem()
         model = prob.model
@@ -190,7 +211,7 @@ class TestDirectSolver(LinearSolverTests.LinearSolverTestCase):
                           promotes_inputs=['dXdt:TAS', 'accel_target'],
                           promotes_outputs=['thrust'])
 
-        teg.linear_solver = DirectSolver()
+        teg.linear_solver = DirectSolver(assemble_jac=False)
 
         teg.nonlinear_solver = NewtonSolver()
         teg.nonlinear_solver.options['solve_subsystems'] = True
@@ -218,9 +239,8 @@ class TestDirectSolver(LinearSolverTests.LinearSolverTestCase):
 
         with self.assertRaises(Exception) as cm:
             prob.setup(check=False)
-            prob.final_setup()
 
-        expected_msg = "CSC matrix data contains the following duplicate row/col entries: [(('dupcomp.x', 'dupcomp.c'), [(10, 2)])]\nThis would break internal indexing."
+        expected_msg = "dupcomp: declare_partials has been called with rows and cols that specify the following duplicate subjacobian entries: [(4, 11), (10, 2)]."
 
         self.assertEqual(expected_msg, str(cm.exception))
 
@@ -319,7 +339,7 @@ class TestDirectSolver(LinearSolverTests.LinearSolverTestCase):
                           promotes_inputs=['dXdt:TAS', 'accel_target'],
                           promotes_outputs=['thrust'])
 
-        teg.linear_solver = DirectSolver()
+        teg.linear_solver = DirectSolver(assemble_jac=False)
 
         teg.nonlinear_solver = NewtonSolver()
         teg.nonlinear_solver.options['solve_subsystems'] = True
@@ -353,7 +373,7 @@ class TestDirectSolver(LinearSolverTests.LinearSolverTestCase):
         model.connect('c4.y', 'c5.x')
         model.connect('c4.y2', 'c6.x')
 
-        model.linear_solver = DirectSolver()
+        model.linear_solver = DirectSolver(assemble_jac=False)
 
         prob.setup()
         prob.run_model()
@@ -518,6 +538,92 @@ class TestDirectSolver(LinearSolverTests.LinearSolverTestCase):
         expected_msg = "Singular entry found in '' for column associated with state/residual 'c5.y'."
 
         self.assertEqual(expected_msg, str(cm.exception))
+
+    def test_raise_error_on_underdetermined_csc(self):
+
+        class DCgenerator(ImplicitComponent):
+
+            def setup(self):
+                self.add_input('V_bus', val=1.0)
+                self.add_input('V_out', val=1.0)
+
+                self.add_output('I_out', val=-2.0)
+                self.add_output('P_out', val=-2.0)
+
+                self.declare_partials('I_out', 'V_bus', val=1.0)
+                self.declare_partials('I_out', 'V_out', val=-1.0)
+                self.declare_partials('P_out', ['V_out', 'I_out'])
+                self.declare_partials('P_out', 'P_out', val=-1.0)
+
+            def apply_nonlinear(self, inputs, outputs, resids):
+                resids['I_out'] = inputs['V_bus'] - inputs['V_out']
+                resids['P_out'] = inputs['V_out'] * outputs['I_out'] - outputs['P_out']
+
+            def linearize(self, inputs, outputs, J):
+                J['P_out', 'V_out'] = outputs['I_out']
+                J['P_out', 'I_out'] = inputs['V_out']
+
+        class RectifierCalcs(ImplicitComponent):
+
+            def setup(self):
+                self.add_input('P_out', val=1.0)
+
+                self.add_output('P_in', val=1.0)
+                self.add_output('V_out', val=1.0)
+                self.add_output('Q_in', val=1.0)
+
+                self.declare_partials('P_in', 'P_out', val=1.0)
+                self.declare_partials('P_in', 'P_in', val=-1.0)
+                self.declare_partials('V_out', 'V_out', val=-1.0)
+                self.declare_partials('Q_in', 'P_in', val=1.0)
+                self.declare_partials('Q_in', 'Q_in', val=-1.0)
+
+            def apply_nonlinear(self, inputs, outputs, resids):
+                resids['P_in'] = inputs['P_out'] - outputs['P_in']
+                resids['V_out'] = 1.0 - outputs['V_out']
+                resids['Q_in'] = outputs['P_in'] - outputs['Q_in']
+
+        class Rectifier(Group):
+
+            def setup(self):
+                self.add_subsystem('gen', DCgenerator(), promotes=[('V_bus', 'Vm_dc'), 'P_out'])
+
+                self.add_subsystem('calcs', RectifierCalcs(), promotes=['P_out', ('V_out', 'Vm_dc')])
+
+                self.nonlinear_solver = NewtonSolver()
+                self.linear_solver = DirectSolver()
+
+        prob = Problem()
+        prob.model.add_subsystem('sub', Rectifier())
+
+        prob.setup(check=False)
+        prob.set_solver_print(level=0)
+
+        with self.assertRaises(RuntimeError) as cm:
+            prob.run_model()
+
+        expected_msg = "Identical rows or columns found in jacobian in 'sub'. Problem is underdetermined."
+
+        self.assertEqual(expected_msg, str(cm.exception))
+
+    def test_matvec_error_raised(self):
+        prob = Problem()
+        model = prob.model = Group()
+        model.add_subsystem('x_param', IndepVarComp('length', 3.0),
+                            promotes=['length'])
+        model.add_subsystem('mycomp', TestExplCompSimpleJacVec(),
+                            promotes=['length', 'width', 'area'])
+
+        model.linear_solver = self.linear_solver_class()
+        prob.set_solver_print(level=0)
+
+        prob.setup(check=False, mode='fwd')
+
+        prob['width'] = 2.0
+
+        msg = "AssembledJacobian not supported for matrix-free subcomponent."
+        with assertRaisesRegex(self, Exception, msg):
+            prob.run_model()
 
 
 class TestDirectSolverFeature(unittest.TestCase):

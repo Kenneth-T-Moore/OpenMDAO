@@ -1,4 +1,76 @@
 ################################################################################################
+Release Notes for OpenMDAO 2.6.0
+
+February 22, 2018
+
+New Features:
+-------------
+- MetaModelStructured will detect NaN in requested sample and print a readable message.
+- ScipyOptimizeDriver now supports Hessian calculation option for optimizers that use it.
+- User can specify src_indices that have duplicates or have two inputs on a single component connected to the same output, and still have CSC Jacobian work.
+- User can get/set problem values in a straightforward manner: prob['var'] = 2., etc. even when running in parallel.
+    - Problem 'get' access to distributed variables will raise an exception since it isn't clear what behavior is expected,
+      i.e. should prob['comp.x'] return the full distributed variable or just the local part.
+- Directsolver has an improved error message when it detects identical rows or columns in Jacobian.
+- The NonlinearBlockGS solver has been updated with a less expensive implementation that does not call the compute method of Explicit components as many times.
+- User can request a directional-derivative check (similar to SNOPTs built-in level 0 check) for check_partials.
+- check_partials with compact_print will now always show all check pairs.
+- The N^2 diagram (from `openmdao view_model`) now shows the solver hierarchy.
+- KSComp has an improved, vectorized implementation.
+- list_inputs now includes a 'shape' argument.
+- User can generate an XDSM from a model (`openmdao xdsm`).
+- User can set `units=<something>` for an execcomp, when all variables have the same units.
+
+Backwards Incompatible API Changes:
+-----------------------------------
+- The default bounds enforcement for BoundsEnforceLS is now 'scalar' (was 'vector')
+- Direct solver will now use 'assemble_jac=True' by default
+- Recording options 'includes' and 'excludes' now use promoted names for outputs (absolute path names are still used for inputs)
+- FloatKrigingSurrogate has been deprecated since it does not provide any unique functionality.
+- FloatMultifiKrigingSurrogate has been deleted because it was never used, was incorrectly implemented, and provides no new functionality.
+
+Bug Fixes:
+----------
+- Complex-step around Newton+DirectSolver now works with assembled Jacobians.
+- Armijolinesearch implementation was incorrect when used with solve_subsystems. The implementation is now correct.
+
+################################################################################################
+Release Notes for OpenMDAO 2.5.0
+
+October 31, 2018
+
+New Features:
+--------------
+- list_outputs() method now includes a `prom_name` argument to include the promoted name in the printed output (Thanks John Jasa!).
+- N2 viewer now includes tool tip (hover over) showing the promoted name of any variable.
+- Improved error msg when building sparse partials with duplicate col/row entries.
+- You can now build the docs without MPI/PETSc installed (you will get warnings, but no longer errors).
+- Major internal refactor to reduce overhead on compute_totals calls (very noticeable on large design spaces but still cheap problems).
+- Components now have a `under_complex_step` attribute you can check to see if complex-step is currently active.
+- Components `distributed` attribute has been moved to an option (old attribute has been deprecated).
+- MetaModelUnstructured will now use FD for partial derivatives of surrogates that don't provide analytic derivatives (user can override the default settings if they wish to use CS or different FD config).
+- Improvements to SimpleGA to make it more stable, and added support constraints via penalty functions (Thanks madsmpedersen and onodip).
+- Parallel FD and CS at the component and group level is now supported.
+- Can turn off the analytic derivative sub-system if it is not needed via an argument to setup().
+- Derivative coloring now works for problems that run under MPI.
+
+- New Components in the standard library:
+    - Mux and Demux components.
+
+- New CaseRecording/CaseReading Features:
+    - DesVar AND output variable bounds are both reordered now.
+    - Improved error msg if you try to load a non-existent file with CaseReader.
+
+- **Experimental Feature**: Discrete data passing is now supported as an experimental feature... we're still testing it, and may change the API!
+
+Backwards Incompatible API Changes:
+------------------------------------
+- `get_objectives` method on CaseReader now returns a dict-like object.
+- Output vector is now locked (read-only) when inside the `apply_nonlinear` method (you shouldn't have been changing it then anyway!).
+- default step size for complex-step has been changed to 1e-40.
+- Moderate refactor of the CaseReader API. It is now self-consistent.
+
+################################################################################################
 Release Notes for OpenMDAO 2.4.0
 
 August 1, 2018
