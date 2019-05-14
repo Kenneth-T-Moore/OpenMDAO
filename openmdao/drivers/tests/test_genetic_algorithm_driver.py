@@ -468,6 +468,7 @@ class TestMultiObjectiveSimpleGA(unittest.TestCase):
         self.assertGreater(h2, h1)  # top area does not depend on height
 
     def test_pareto(self):
+        np.random.seed(11)
 
         prob = Problem()
         prob.model.add_subsystem('box', Box(), promotes=['*'])
@@ -479,10 +480,12 @@ class TestMultiObjectiveSimpleGA(unittest.TestCase):
 
         # setup the optimization
         prob.driver = SimpleGADriver()
-        prob.driver.options['max_gen'] = 100
+        prob.driver.options['max_gen'] = 20
         prob.driver.options['bits'] = {'length': 8, 'width': 8, 'height': 8}
         prob.driver.options['penalty_parameter'] = 10.
         prob.driver.options['compute_pareto'] = True
+
+        prob.driver._randomstate = 11
 
         prob.model.add_design_var('length', lower=0.1, upper=2.)
         prob.model.add_design_var('width', lower=0.1, upper=2.)
@@ -494,7 +497,13 @@ class TestMultiObjectiveSimpleGA(unittest.TestCase):
         prob.setup()
         prob.run_driver()
 
-        print('done')
+        nd_obj = prob.driver.obj_nd
+        sorted_obj = nd_obj[nd_obj[:, 0].argsort()]
+
+        # We have sorted the pareto points by col one, so col 1 should be ascending.
+        # Col 2 should be descending because the points are non-dominated.
+        self.assertTrue(np.all(sorted_obj[:-1, 0] <= sorted_obj[1:, 0]))
+        self.assertTrue(np.all(sorted_obj[:-1, 1] >= sorted_obj[1:, 1]))
 
 
 class TestConstrainedSimpleGA(unittest.TestCase):

@@ -302,9 +302,14 @@ class SimpleGADriver(Driver):
                                               bits, pop_size, max_gen,
                                               self._randomstate, Pm, Pc)
 
-        # Pull optimal parameters back into framework and re-run, so that
-        # framework is left in the right final state
-        if not compute_pareto:
+        if compute_pareto:
+            # Just save the non-dominated points.
+            self.desvar_nd = desvar_new
+            self.obj_nd = obj
+
+        else:
+            # Pull optimal parameters back into framework and re-run, so that
+            # framework is left in the right final state
             for name in desvars:
                 i, j = self._desvar_idx[name]
                 val = desvar_new[i:j]
@@ -566,13 +571,12 @@ class GeneticAlgorithm(object):
             Number of successful function evaluations.
         """
         comm = self.comm
-        fopt = np.inf
         nobj = self.nobj
         self.lchrom = int(np.sum(bits))
 
         if nobj > 1:
             xopt = []
-            nd = []
+            fopt = []
 
             # Needs to be divisible by number of objectives because of tournament selection
             # strategy.
@@ -580,6 +584,7 @@ class GeneticAlgorithm(object):
                 pop_size += np.mod(pop_size, nobj)
         else:
             xopt = copy.deepcopy(vlb)
+            fopt = np.inf
 
             # Needs to be divisible by two because tournament selection pits one half of the
             # population against the other half.
@@ -658,7 +663,7 @@ class GeneticAlgorithm(object):
 
             # Find Pareto front.
             if nobj > 1:
-                self.eval_pareto(fitness, x_pop, xopt, nd)
+                xopt, fopt = self.eval_pareto(x_pop, fitness, xopt, fopt)
 
             # Find best objective.
             else:
@@ -692,57 +697,49 @@ class GeneticAlgorithm(object):
 
         return xopt, fopt, nfit
 
-    def eval_pareto(self, obj_val, x_design, x_opt, nd):
+    def eval_pareto(self, x, obj, x_nd, obj_nd):
         """
         Produce a set of non dominated designs.
+
+        Parameters
+        ----------
+        x : ndarray
+            Design points from new generation.
+        obj : ndarray
+            Objective values from new generation.
+        x_nd : ndarray
+            Non dominated design points from previous pareto evaluation.
+        obj_nd : ndarray
+            Non dominated objective values from previous pareto evaluation.
+
+        Returns
+        -------
+        ndarray
+            Nondominated design points.
+        ndarray
+            Objective at nondominated design points.
         """
-        nd_prev = nd
-        nc_count = 0
-        if len(nd) > 1:
-            ypop = np.concatenate((np.array(nd), obj_val), axis=0)
-            xpop = np.concatenate(x_opt, x_design, axis=0)
+
+        if len(x_nd) > 1:
+            ypop = np.concatenate((np.array(obj_nd), obj), axis=0)
+            xpop = np.concatenate((x_nd, x), axis=0)
         else:
-            ypop = obj_val.copy()
-            xpop = x_design.copy()
+            ypop = obj
+            xpop = x
 
-        n_pts, n_obj = ypop.shape
-        pot = ypop.copy()
+        n_pts = ypop.shape[0]
+        i = 0
+        pot_idx = np.arange(n_pts)
+        while i < len(ypop):
+            nd_point_mask = np.any(ypop < ypop[i, :], axis=1)
+            nd_point_mask[i] = True
 
-    #%Pareto generator developed by Satadru Roy
-    #function [ND,xopt,NC_count]=paretogen(ND,obj_val,xopt,x_des,problem)
-    #ND_prev=ND;NC_count=0;
+            # Remove dominated points
+            pot_idx = pot_idx[nd_point_mask]
+            ypop = ypop[nd_point_mask]
+            i = np.sum(nd_point_mask[:i]) + 1
 
-    #ypop = [ND;obj_val];
-    #xpop = [xopt;x_des];
-
-    #[num_pts, num_obj] = size(ypop);
-    #pot = ypop;
-    #pot_index = (1:num_pts)';
-    #cc=1;
-    #totpt_del=0;
-    #while totpt_del+cc <= num_pts
-        #aa = 1:num_pts;
-        #for ii = 1:num_obj
-            #ind(ii).f = find(pot(:,ii)>= pot(cc,ii));
-            #aa = intersect(aa,ind(ii).f);
-        #end
-        #aa(aa==cc) = [];
-        #pot(aa,:) = [];
-        #pot_index(aa,:) = [];
-        #cc = cc - length(find(aa<cc));
-        #cc=cc+1;
-        #totpt_del = totpt_del + length(aa);
-    #end
-    #ND=pot;
-    #xopt=xpop(pot_index,:);
-
-    #if ~isempty(ND_prev) && ~isempty(ND)
-        #if (size(ND,1)==size(ND_prev,1))
-            #if norm(ND-ND_prev)<=1e-6
-                 #NC_count=1;
-            #end
-        #end
-    #end
+        return xpop[pot_idx, :], ypop
 
     def tournament(self, old_gen, fitness):
         """
