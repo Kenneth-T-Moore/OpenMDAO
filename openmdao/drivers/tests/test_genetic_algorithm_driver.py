@@ -500,7 +500,7 @@ class TestMultiObjectiveSimpleGA(unittest.TestCase):
         nd_obj = prob.driver.obj_nd
         sorted_obj = nd_obj[nd_obj[:, 0].argsort()]
 
-        # We have sorted the pareto points by col one, so col 1 should be ascending.
+        # We have sorted the pareto points by col 1, so col 1 should be ascending.
         # Col 2 should be descending because the points are non-dominated.
         self.assertTrue(np.all(sorted_obj[:-1, 0] <= sorted_obj[1:, 0]))
         self.assertTrue(np.all(sorted_obj[:-1, 1] >= sorted_obj[1:, 1]))
