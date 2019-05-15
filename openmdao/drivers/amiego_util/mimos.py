@@ -13,30 +13,132 @@ class MIMOS(Driver):
     Implements Multiple Infills via a Multi-Objective Strategy (MIMOS) as a plugin for
     the minlp slot on the AMIEGO driver.
 
+    This will not work as a standalone driver.
+
     Attributes
     ----------
     dvs : list
         Cache of integer design variable names.
+    eflag_MINLPBB : bool
+        This is set to True when we find a local minimum.
+    fopt : ndarray
+        Objective value with the maximum expected improvement.
+    xI_lb : ndarray
+        Lower bound of the integer design variables.
+    xI_ub : ndarray
+        Upper bound of the integer design variables.
+    xopt : ndarray
+        List of new infill points from optimizing exploitation and exploration.
     """
+
+    def __init__(self):
+        """
+        Initialize the MIMOS driver.
+        """
+        super(MIMOS, self).__init__()
+
+        # What we support
+        self.supports['inequality_constraints'] = True
+        self.supports['equality_constraints'] = False
+        self.supports['multiple_objectives'] = False
+        self.supports['two_sided_constraints'] = False
+        self.supports['active_set'] = False
+        self.supports['linear_constraints'] = False
+        self.supports['gradients'] = False
+
+        # Options
+        opt.declare('required_samples', 3,
+                    desc='Number of infill points.')
+        self.options.declare('bits', default={}, types=(dict),
+                             desc='Number of bits of resolution. Default is an empty dict, where '
+                             'every unspecified variable is assumed to be integer, and the number '
+                             'of bits is calculated automatically. If you have a continuous var, '
+                             'you should set a bits value as a key in this dictionary.')
+
+        self.dvs = []
+        self.idx_cache = {}
+
+        # We will set this to True if we have found a minimum.
+        self.eflag_MINLPBB = False
+
+    def _setup_driver(self, problem):
+        """
+        Prepare the driver for execution.
+
+        This is the final thing to run during setup.
+
+        Parameters
+        ----------
+        problem : <Problem>
+            Pointer to the containing problem.
+        """
+        super(MIMOS, self)._setup_driver(problem)
+
+        # Size our design variables.
+        j = 0
+        for name, val in iteritems(self.get_design_var_values()):
+            self.dvs.append(name)
+            if name in self._designvars_discrete:
+                if np.isscalar(val):
+                    size = 1
+                else:
+                    size = len(val)
+            else:
+                size = len(val)
+            self.idx_cache[name] = (j, j + size)
+            j += size
+
+        # Lower and Upper bounds
+        self.xI_lb = np.empty((j))
+        self.xI_ub = np.empty((j))
+        dv_dict = self._designvars
+        for var in self.dvs:
+            i, j = self.idx_cache[var]
+            self.xI_lb[i:j] = dv_dict[var]['lower']
+            self.xI_ub[i:j] = dv_dict[var]['upper']
+
+    def run(self):
+        """
+        Execute the MIMOS method.
+
+        Returns
+        -------
+        boolean
+            Failure flag; True if failed to converge, False if successful.
+        """
+        self.eflag_MINLPBB = False
+
+        y_nd, x_nd = self.find_nondominated_set()
+
+        if len(x_nd) > 0:
+            ei_min = min(y_nd[:, 0])
+            num_nd = y_nd.shape[0]
+
+            actual_pt2sam = min(self.options['required_samples'], num_nd)
+
+            # Create and select samples from clusters.
+            x_new, eflag = self.create_cluster(y_nd, x_nd, actual_pt2sam)
+
+        else:
+            x_new = []
+            ei_min = None
+            eflag = True
+
+        # Save the new infill points for AMIEGO to retrieve.
+        self.xopt = x_new
+        self.fopt = ei_min
+        self.eflag_MINLPBB = eflag
+
+        return False
+
+    def find_nondominated_set():
+        """
+
+        """
+        pass
 
 
 """
-%% This function samples Multiple Infills via a Multi-Objective Strategy (MIMOS)
-function [x_new, ei_min, eflag] = MIMOS3(lb,ub,ModelInfo_obj,intcon,prob_data)
-    %% Find the non-dominated set using a MOEA
-    [y_NDpt, x_NDpt] = findNDset(lb, ub, ModelInfo_obj, intcon);
-    if ~isempty(y_NDpt)
-        ei_min = min(y_NDpt(:,1));
-        num_NDpt = size(y_NDpt,1);
-        actual_pt2sam = min(prob_data.req_sam,num_NDpt);
-%         fprintf('\n%s%d','Number ND points: ',num_NDpt)
-        %% Create and select samples from clusters
-        [x_new,eflag] = create_cluster(y_NDpt,x_NDpt,actual_pt2sam, ModelInfo_obj.X_org, ModelInfo_obj.y_org);
-    else
-        x_new=[];ei_min=[];eflag=-1;
-    end
-
-% keyboard
 %% Sub functions
 function [y_NDpt, x_NDpt] = findNDset(lb, ub, ModelInfo_obj, intcon)
     if length(intcon) < length(lb)

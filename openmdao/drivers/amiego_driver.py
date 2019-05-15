@@ -24,6 +24,7 @@ import numpy as np
 from openmdao.core.driver import Driver
 from openmdao.drivers.amiego_util.branch_and_bound import Branch_and_Bound
 from openmdao.drivers.amiego_util.kriging import AMIEGOKrigingSurrogate
+from openmdao.drivers.amiego_util.mimos import MIMOS
 from openmdao.drivers.scipy_optimizer import ScipyOptimizeDriver
 from openmdao.recorders.recording_iteration_stack import Recording
 
@@ -92,8 +93,8 @@ class AMIEGO_driver(Driver):
         self.supports['active_set'] = False
         self.supports['linear_constraints'] = False
         self.supports['gradients'] = True
-        self.supports['mixed_integer'] = True
         self.supports['two_sided_constraints'] = True
+        self.supports['integer_design_vars'] = True
 
         # Options
         opt = self.options
@@ -105,6 +106,14 @@ class AMIEGO_driver(Driver):
                     desc='Maximum number of additional points per design variable.')
         opt.declare('r_penalty', 2.0,
                     desc='Constraint penalty applied to objective.')
+        opt.declare('multiple_infill', False,
+                    desc='Set to True to use MIMOS Multi-Objective Multiple Infill points.')
+        self.options.declare('bits', default={}, types=(dict),
+                             desc='Number of bits of resolution. Default is an empty dict, where '
+                             'every unspecified variable is assumed to be integer, and the number '
+                             'of bits is calculated automatically. If you have a continuous var, '
+                             'you should set a bits value as a key in this dictionary. Only used '
+                             'if the "mimos" option is set to True.')
 
         # The default continuous optimizer. User can slot a different one
         self.cont_opt = ScipyOptimizeDriver()
@@ -114,7 +123,7 @@ class AMIEGO_driver(Driver):
         self.minlp = Branch_and_Bound()
 
         # Default surrogate. User can slot a modified one, but it essentially
-        # has to provide what Kriging provides.
+        # has to provide the same interface -- a single point or a set of integer
         self.surrogate = AMIEGOKrigingSurrogate
 
         self.c_dvs = []
@@ -146,6 +155,13 @@ class AMIEGO_driver(Driver):
         problem : <Problem>
             Pointer to the containing problem.
         """
+        mimos = self.options['multiple_infill']
+        if mimos:
+            # We change the default option if the user requests MIMOS.
+            # Note we run into the classic problem where we can't set options on it until it is
+            # created, but its creation also depends on an option.
+            self.minlp = MIMOS()
+
         super(AMIEGO_driver, self)._setup_driver(problem)
 
         # Need to clean out anything in the continuous optimizer first.
@@ -160,6 +176,8 @@ class AMIEGO_driver(Driver):
         minlp = self.minlp
         minlp._setup_driver(problem)
         minlp.options['disp'] = self.options['disp']
+        if mimos:
+            minlp.options['bits'] = self.options['bits']
 
         # Identify and size our design variables.
         prom2abs = problem.model._var_allprocs_prom2abs_list['output']
@@ -262,7 +280,6 @@ class AMIEGO_driver(Driver):
         _ = self.cont_opt._update_voi_meta(model)
         _ = self.minlp._update_voi_meta(model)
         return super(AMIEGO_driver, self)._update_voi_meta(model)
-
 
     def run(self):
         """
@@ -563,7 +580,7 @@ class AMIEGO_driver(Driver):
                 if disp:
                     print("Eflag = ", eflag_MINLPBB)
 
-                if eflag_MINLPBB >= 1:
+                if eflag_MINLPBB is True:
 
                     ei_max = -ei_min
                     tot_pt_prev = tot_newpt_added

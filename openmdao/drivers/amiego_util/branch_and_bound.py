@@ -64,6 +64,10 @@ class Branch_and_Bound(Driver):
         Cache of local sizes for each design variable.
     obj_surrogate : <AMIEGOKrigingSurrogate>
         Surrogate model of the objective as a function of the integer design vars.
+    xI_lb : ndarray
+        Lower bound of the integer design variables.
+    xI_ub : ndarray
+        Upper bound of the integer design variables.
     xopt : ndarray
         Optimal design.
     """
@@ -82,7 +86,7 @@ class Branch_and_Bound(Driver):
         self.supports['active_set'] = False
         self.supports['linear_constraints'] = False
         self.supports['gradients'] = False
-        self.supports['mixed_integer'] = False
+        self.supports['integer_design_vars'] = True
 
         # Options
         opt = self.options
@@ -164,7 +168,7 @@ class Branch_and_Bound(Driver):
 
     def run(self):
         """
-        Execute the Branch_and_Bound method..
+        Execute the Branch_and_Bound method.
 
         Returns
         -------
@@ -179,6 +183,7 @@ class Branch_and_Bound(Driver):
         maxiter_ubd = self.options['maxiter_ubd']
 
         self.iter_count = 1
+        self.eflag_MINLPBB = False
 
         obj_surrogate.p = 2
         obj_surrogate.y_best = np.min(obj_surrogate.Y)
