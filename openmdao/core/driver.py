@@ -164,7 +164,7 @@ class Driver(object):
         self.supports.declare('linear_constraints', types=bool, default=False)
         self.supports.declare('two_sided_constraints', types=bool, default=False)
         self.supports.declare('multiple_objectives', types=bool, default=False)
-        self.supports.declare('integer_design_vars', types=bool, default=True)
+        self.supports.declare('integer_design_vars', types=bool, default=False)
         self.supports.declare('gradients', types=bool, default=False)
         self.supports.declare('active_set', types=bool, default=False)
         self.supports.declare('mixed_integer', types=bool, default=False)
@@ -482,6 +482,22 @@ class Driver(object):
         else:
             if name in self._designvars_discrete:
                 val = model._discrete_outputs[name]
+
+                # At present, only integers are supported by OpenMDAO drivers.
+                # We check the values here.
+                valid = True
+                msg = "Only integer scalars or ndarrays are supported as values for " + \
+                      "discrete variables when used as a design variable. "
+                if np.isscalar(val) and not isinstance(val, int):
+                    msg += "A value of type '{}' was specified.".format(val.__class__.__name__)
+                    valid = False
+                elif isinstance(val, np.ndarray) and not np.issubdtype(val[0], int):
+                    msg += "An array of type '{}' was specified.".format(val[0].__class__.__name__)
+                    valid = False
+
+                if valid is False:
+                    raise ValueError(msg)
+
             elif indices is None or ignore_indices:
                 val = vec[name].copy()
             else:
@@ -1078,6 +1094,12 @@ class Driver(object):
             if not MPI or MPI.COMM_WORLD.rank == 0:
                 print("Design Vars")
                 if desvar_vals:
+
+                    # Print desvars in non_flattened state.
+                    meta = self._problem.model._var_allprocs_abs2meta
+                    for name in desvar_vals:
+                        shape = meta[name]['shape']
+                        desvar_vals[name] = desvar_vals[name].reshape(shape)
                     pprint.pprint(desvar_vals)
                 else:
                     print("None")
