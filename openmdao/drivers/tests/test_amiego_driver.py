@@ -39,14 +39,12 @@ class TestAMIEGOdriver(unittest.TestCase):
         model.connect('p2.xI', 'comp.x0')
         model.connect('p1.xC', 'comp.x1')
 
-        #model.approx_totals(method='fd')
-
         model.add_design_var('p2.xI', lower=-5.0, upper=10.0)
         model.add_design_var('p1.xC', lower=0.0, upper=15.0)
         model.add_objective('comp.f')
 
         prob.driver = AMIEGO_driver()
-        #prob.driver.options['disp'] = False
+        prob.driver.options['disp'] = False
 
         prob.driver.cont_opt = pyOptSparseDriver()
         prob.driver.cont_opt.options['optimizer'] = 'SNOPT'
@@ -76,19 +74,51 @@ class TestAMIEGOdriver(unittest.TestCase):
         model.connect('p.xI', 'comp.x0')
         model.connect('p.xC', 'comp.x1')
 
-        #model.approx_totals(method='fd')
+        model.add_design_var('p.xI', lower=-5, upper=10)
+        model.add_design_var('p.xC', lower=0.0, upper=15.0)
+        model.add_objective('comp.f')
+
+        prob.driver = AMIEGO_driver()
+        prob.driver.options['disp'] = False
+
+        prob.driver.cont_opt = pyOptSparseDriver()
+        prob.driver.cont_opt.options['optimizer'] = 'SNOPT'
+        prob.driver.minlp.options['trace_iter'] = 3
+        prob.driver.minlp.options['trace_iter_max'] = 5
+
+        prob.driver.sampling = {'p.xI' : np.array([[-5.0], [0.0], [5.0]])}
+
+        prob.setup(check=False)
+        prob.run_driver()
+
+        # Optimal solution
+        assert_rel_error(self, prob['comp.f'], 0.49398, 1e-5)
+        self.assertTrue(int(prob['p.xI']) in [3, -3])
+
+    def test_simple_branin_opt_mimos(self):
+        prob = Problem()
+        model = prob.model = Group()
+
+        indep = IndepVarComp()
+        indep.add_output('xC', val=7.5)
+        indep.add_discrete_output('xI', val=0)
+
+        model.add_subsystem('p', indep)
+        model.add_subsystem('comp', BraninDiscrete())
+
+        model.connect('p.xI', 'comp.x0')
+        model.connect('p.xC', 'comp.x1')
 
         model.add_design_var('p.xI', lower=-5, upper=10)
         model.add_design_var('p.xC', lower=0.0, upper=15.0)
         model.add_objective('comp.f')
 
         prob.driver = AMIEGO_driver()
-        #prob.driver.options['disp'] = False
+        prob.driver.options['disp'] = False
+        prob.driver.options['multiple_infill'] = True
 
         prob.driver.cont_opt = pyOptSparseDriver()
         prob.driver.cont_opt.options['optimizer'] = 'SNOPT'
-        prob.driver.minlp.options['trace_iter'] = 3
-        prob.driver.minlp.options['trace_iter_max'] = 5
 
         prob.driver.sampling = {'p.xI' : np.array([[-5.0], [0.0], [5.0]])}
 

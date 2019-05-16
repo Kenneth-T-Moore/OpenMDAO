@@ -634,7 +634,6 @@ class Branch_and_Bound(Driver):
             Objective value
         """
         obj_surrogate = self.obj_surrogate
-        X = obj_surrogate.X
 
         # Normalized as per the convention in openmdao_Alpha:Kriging.
         xval = (xI - obj_surrogate.X_mean) / obj_surrogate.X_std

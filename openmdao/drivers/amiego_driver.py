@@ -155,13 +155,6 @@ class AMIEGO_driver(Driver):
         problem : <Problem>
             Pointer to the containing problem.
         """
-        mimos = self.options['multiple_infill']
-        if mimos:
-            # We change the default option if the user requests MIMOS.
-            # Note we run into the classic problem where we can't set options on it until it is
-            # created, but its creation also depends on an option.
-            self.minlp = MIMOS()
-
         super(AMIEGO_driver, self)._setup_driver(problem)
 
         # Need to clean out anything in the continuous optimizer first.
@@ -176,7 +169,7 @@ class AMIEGO_driver(Driver):
         minlp = self.minlp
         minlp._setup_driver(problem)
         minlp.options['disp'] = self.options['disp']
-        if mimos:
+        if self.options['multiple_infill']:
             minlp.options['bits'] = self.options['bits']
 
         # Identify and size our design variables.
@@ -277,6 +270,12 @@ class AMIEGO_driver(Driver):
         int
             Total size of design vars.
         """
+        if self.options['multiple_infill']:
+            # We change the default option if the user requests MIMOS.
+            # Note we run into the classic problem where we can't set options on it until it is
+            # created, but its creation also depends on an option.
+            self.minlp = MIMOS()
+
         _ = self.cont_opt._update_voi_meta(model)
         _ = self.minlp._update_voi_meta(model)
         return super(AMIEGO_driver, self)._update_voi_meta(model)
@@ -544,6 +543,7 @@ class AMIEGO_driver(Driver):
             obj_surrogate.train(X, Y, KPLS=True, norm_data=True)
 
             best_obj_norm = (best_obj - obj_surrogate.Y_mean) / obj_surrogate.Y_std
+            obj_surrogate.best_obj_norm = best_obj_norm
 
             if disp:
                 print("\nSurrogate building of the objective is complete...")
