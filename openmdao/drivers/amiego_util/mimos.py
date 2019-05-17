@@ -175,7 +175,7 @@ class MIMOS(Driver):
             actual_pt2sam = min(self.options['required_samples'], num_nd)
 
             # Create and select samples from clusters.
-            x_new, eflag = self.create_cluster(y_nd, x_nd, actual_pt2sam)
+            x_new, eflag = self.create_cluster(x_nd, y_nd, actual_pt2sam)
 
         else:
             x_new = []
@@ -206,7 +206,7 @@ class MIMOS(Driver):
         """
         model = self._problem.model
         ga = self._ga
-        ga.nobj = 2
+        ga.nobj = 3
 
         pop_size = self.options['pop_size']
         max_gen = self.options['max_gen']
@@ -296,18 +296,37 @@ class MIMOS(Driver):
         # (Normalized as per the convention in openmdao_Alpha:Kriging.)
         xval = (x - obj_surrogate.X_mean) / obj_surrogate.X_std
 
-        NegEI1 = calc_genEI_norm(xval, obj_surrogate, 1)
+        negEI1 = calc_genEI_norm(xval, obj_surrogate, 1)
+        negEI0 = calc_genEI_norm(xval, obj_surrogate, 0)
 
-        #function f = objfunc_MOGA(x_con,x_dis,problem)
-        #x = [x_dis,x_con]; % 1 x k
-        #% if size(x,2)<2; x = x'; end
-        #%% Objective 1: Expected Improvement
-        #xval = ((x - problem.ModelInfo_obj.X_mean)./problem.ModelInfo_obj.X_std)';
-        #Neg_EI1 = calc_genEI_norm(xval,problem.ModelInfo_obj,1);
-        #Neg_EI0 = calc_genEI_norm(xval,problem.ModelInfo_obj,0);
-        #%% Objective 2: Maximize distance from any existing points
-        #[~,dis] = knnsearch(problem.ModelInfo_obj.X_org, x, 'k',1);
-        #f = [Neg_EI1,-1*dis,Neg_EI0];
+        # Objective 2: Maximize distance from any existing points.
+        x_data = np.array(obj_surrogate.x_org)
+        distance = np.min(np.sum((x_data - x)**2, axis=1))
+
+        return np.array([negEI1, -distance, negEI0]), True, icase
+
+    def create_cluster(x_nd, y_nd, actual_pt2sam):
+        """
+        Create cluster of infill points.
+
+        Attributes
+        ----------
+        x_nd : ndarray
+            Non dominated design points.
+        y_nd : ndarray
+            Objective values at non dominated points.
+        actual_pt2sam : float
+            Number of new samples.
+
+        Returns
+        -------
+        ndarray
+            New sample points for amiego.
+        eflag : bool
+            This is set to True unless no new samples are found.
+        """
+        obj_surrogate = self.obj_surrogate
+
 
 
 def norm_pdf(x, mu=0.0, sigma=1.0):
@@ -354,105 +373,34 @@ def calc_genEI_norm(xval, obj_surrogate, gg):
 
     if SSqr <= 1.0e-30:
         if abs(SSqr) <= 1.0e-30:
-            Neg_genEI = -0.0
+            neg_genEI = -0.0
 
     else:
         # Calculate the generalized expected improvement function
         sqrt_SSqr = np.sqrt(SSqr)
         z = (y_min - y_hat) / sqrt_SSqr
+        z = np.asscalar(z)
         sg = sqrt_SSqr ** gg
 
         phi_s = norm_pdf(z)
-        phi_C = np.cumsum(phi_s)
+        phi_C = np.cumsum(phi_s)[0]
 
-        T_k = np.zeros((gg + 1, ))
-        T_k[0] = phi_C
-        T_k[1] = -phi_s
+        T_k = np.array([phi_C, -phi_s])
         SS = 0;
-        for kk in range(gg):
+        for kk in range(gg + 1):
             if kk >= 1:
                 T_k[kk] = -phi_s * z**(kk - 2) + (kk - 2)*T_k[kk - 2]
             SS += ((-1)**kk) * (factorial(gg) / (factorial(kk) * factorial(gg - kk))) * \
-                  (z**(gg - kk)) * T_k[kk + 1]
+                  (z**(gg - kk)) * T_k[kk]
 
-        Neg_genEI = -sg * SS
+        neg_genEI = -sg * SS
 
-    return Neg_genEI
+    return neg_genEI[0]
 
 
-"""
-for i=1:n
-    r(i,1)=exp(-sum(theta'.*(x-X(i,:)).^p));
-end
-%Calculate prediction and error
-y_hat = mu + r'*(R_inv*(y-one*mu));
-SSqr = SigmaSqr*(1 - (r'*(R_inv*r)) + ((1-one'*(R_inv*r))^2/(one'*(R_inv*one))));
-
-if SSqr <= 1e-30
-    Neg_genEI = -0.0;
-else
-    %Calculate the generalized expected improvement function
-    z = (y_min - y_hat)/sqrt(SSqr);
-    sg = (sqrt(SSqr))^gg;
-
-    phi_C = normcdf(z);
-    phi_s = normpdf(z);
-
-    T_k = zeros(gg+1,1); T_k(1) = phi_C; T_k(2) = -phi_s;
-    SS = 0;
-    for kk = 0:gg
-        if kk>=2
-            T_k(kk+1) = -phi_s*z^(kk-1) + (kk-1)*T_k(kk-2+1);
-        end
-        SS=SS+((-1)^kk)*(factorial(gg)/(factorial(kk)*factorial(gg-kk)))*(z^(gg-kk))*T_k(kk+1);
-    end
-    Neg_genEI = -sg*SS; % + y_hat;
-    if isnan(Neg_genEI)
-        keyboard
-    end
-end
-"""
 
 """
 %% Sub functions
-function [y_NDpt, x_NDpt] = findNDset(lb, ub, ModelInfo_obj, intcon)
-    if length(intcon) < length(lb)
-        %Continuous (Keep this option open for Bret's problem)
-        lb_con=lb(length(intcon)+1:end)'; %Lower bounds for the continuous design variables
-        ub_con=ub(length(intcon)+1:end)'; %Upper bound for the continuous design variables
-        res = 0.1;
-        bits_con=ceil(log2((ub_con-lb_con)/res + 1)); %Bits for continuous variable
-    else
-        lb_con=[]; ub_con=[]; bits_con=[];
-    end
-    %Discrete
-    xI_lb = lb(intcon);
-    xI_ub = ub(intcon);
-    bits_dis=ceil(log2(xI_ub-xI_lb+1))';
-    lb_dis = xI_lb';
-    ub_dis = (xI_lb' + (2.^bits_dis - 1)); %% Needs additional work!! Artificially increase the bounds of the design var to accommodate discrete resolution in GA
-    problem.ub_org = xI_ub;
-    problem.ModelInfo_obj = ModelInfo_obj;
-
-    [x_NDpt_raw,y_NDpt_raw] = NBGA3([],lb_con,ub_con,bits_con,...
-        lb_dis,ub_dis,bits_dis,problem);
-
-    % Excludes any point that violates the constraints (due to binary
-    % coding)
-    cc=[];
-    for ii = 1:size(y_NDpt_raw,1)
-        if ~isempty(find((problem.ub_org' - x_NDpt_raw(ii,intcon))<0,1))
-            cc = [cc;ii];
-        end
-    end
-    y_NDpt_raw(cc,:) = [];
-    x_NDpt_raw(cc,:) = [];
-
-    %% Check for no duplicacy within integer ND design space
-    [~,~,ib] = union(ModelInfo_obj.X_org(:,intcon),x_NDpt_raw(:,intcon),'rows');
-    ind_up = sort(ib);
-    x_NDpt = x_NDpt_raw(ind_up,:);
-    y_NDpt = y_NDpt_raw(ind_up,:);
 
 function [x_new,eflag] = create_cluster(y_NDpt,x_NDpt,actual_pt2sam, exist_pt_x, exist_pt_y)
     %% Normalize the ND points
@@ -478,20 +426,6 @@ function [x_new,eflag] = create_cluster(y_NDpt,x_NDpt,actual_pt2sam, exist_pt_x,
             (repmat(worst_pt,[num_NDpt,1]) - repmat(ideal_pt,[num_NDpt,1]));
 
         [clus, clus_cen] = kmeans(norm_NDpt,actual_pt2sam);
-%         % Plot the clusters if needed
-%         % % str = {'bd','go','rx','c+','m*','ks'};
-%         str = {'b','g','r','c','m','k'};
-%         for ii = 1:actual_pt2sam
-%             aa = find(clus==ii);
-%             switch num_obj
-%                 case 2
-%                     plot(norm_NDpt(aa,1),norm_NDpt(aa,2),[str{ii},'o']);hold on
-%                     plot(clus_cen(:,1),clus_cen(:,2),[str{mod(ii,6)+1},'h'],'MarkerSize',15)
-%                 case 3
-%                     plot3(norm_NDpt(aa,1),norm_NDpt(aa,2),norm_NDpt(aa,3),[str{mod(ii,6)+1},'o']);hold on
-%                     plot3(clus_cen(:,1),clus_cen(:,2),clus_cen(:,3),[str{mod(ii,6)+1},'h'],'MarkerSize',15)
-%             end
-%         end
 
         clus_cen_sorted = zeros(actual_pt2sam,num_obj,num_obj);
         Ii = zeros(actual_pt2sam,num_obj);
@@ -547,49 +481,6 @@ function [x_new, flag] = pickfromcluster1(x_clus, y_clus, obj_picked, exist_pt_x
         % Picks a point that satisfies: closest to the best existing point
         [~,ind_ymin] = min(exist_pt_y);
         [~,dis2] = knnsearch(exist_pt_x(ind_ymin,:),x_clus,'k',1);
-        ind_posi_dis2 = find(dis2>0);
-        posi_dis2 = dis2(ind_posi_dis2);
-        [~,ind2] = min(posi_dis2);
-        x_new = x_clus(ind_posi_dis2(ind2),:);
-    end
-    if isempty(x_new)
-        flag = 1;
-        x_new=0*x_clus;
-    end
-
-%     %% Check distance from the best existing point
-%     [~,ind_ymin] = min(exist_pt_y);
-%    eucl_dis = norm(x_new - exist_pt_x(ind_ymin,:));
-%    fprintf('\n%s%d%s%0.3f','Objective/distance: ',obj_picked,', ', eucl_dis)
-
-function [x_new, flag] = pickfromcluster2(x_clus, ~, ~, exist_pt_x, ~)
-    flag = 0;
-    [~,dis] = knnsearch(exist_pt_x, x_clus, 'k',1');
-    ind_posi_dis = find(dis>0);
-    posi_dis = dis(ind_posi_dis);
-
-    % Strategy: Picks point farthest for existing points
-    [~,ind] = max(posi_dis);
-    x_new = x_clus(ind_posi_dis(ind),:);
-
-    if isempty(x_new)
-        flag = 1;
-        x_new=0*x_clus;
-    end
-
-function [x_new, flag] = pickfromcluster3(x_clus, y_clus, obj_picked, exist_pt_x, exist_pt_y)
-    flag = 0;
-    [idx_exist_pt,dis] = knnsearch(exist_pt_x, x_clus, 'k',1');
-    ind_posi_dis = find(dis>0);
-    posi_dis = dis(ind_posi_dis);
-    if obj_picked == 1 || obj_picked == 2
-        % Picks a point that satisfies: max(dis)
-        [~,ind] = max(posi_dis);
-        x_new = x_clus(ind_posi_dis(ind),:);
-    elseif obj_picked == 3 % Search around the best solution (Strategy: pure exploitation)
-        % Picks a point that satisfies: closest to the best existing point
-        [~,ind_clus_ymin] = min(exist_pt_y(idx_exist_pt));
-        [~,dis2] = knnsearch(exist_pt_x(idx_exist_pt(ind_clus_ymin),:),x_clus,'k',1);
         ind_posi_dis2 = find(dis2>0);
         posi_dis2 = dis2(ind_posi_dis2);
         [~,ind2] = min(posi_dis2);

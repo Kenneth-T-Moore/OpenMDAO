@@ -581,7 +581,7 @@ class GeneticAlgorithm(object):
             # Needs to be divisible by number of objectives because of tournament selection
             # strategy.
             if np.mod(pop_size, nobj) > 0:
-                pop_size += np.mod(pop_size, nobj)
+                pop_size += nobj - np.mod(pop_size, nobj)
         else:
             xopt = copy.deepcopy(vlb)
             fopt = np.inf
