@@ -326,7 +326,8 @@ class MIMOS(Driver):
             This is set to True unless no new samples are found.
         """
         obj_surrogate = self.obj_surrogate
-
+        exist_pt_x = obj_surrogate.x_org
+        exist_pt_y = obj_surrogate.y_org
 
 
 def norm_pdf(x, mu=0.0, sigma=1.0):
