@@ -543,8 +543,8 @@ class AMIEGO_driver(Driver):
             obj_surrogate.train(X, Y, KPLS=True, norm_data=True)
 
             # Cache non-normalized samples too.
-            obj_surrogate.x_org = x_i
-            obj_surrogate.y_org = obj_surr
+            obj_surrogate.x_org = np.array(x_i)
+            obj_surrogate.y_org = np.array(obj_surr)
 
             best_obj_norm = (best_obj - obj_surrogate.Y_mean) / obj_surrogate.Y_std
             obj_surrogate.best_obj_norm = best_obj_norm

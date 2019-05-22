@@ -17,7 +17,7 @@ from math import factorial
 import os
 
 import numpy as np
-from scipy.cluster.vq import kmeans
+from scipy.cluster.vq import kmeans2, whiten
 from scipy.stats import norm
 
 from openmdao.core.driver import Driver
@@ -270,6 +270,10 @@ class MIMOS(Driver):
                                               bits, pop_size, max_gen,
                                               self._randomstate, Pm, Pc)
 
+        # Remove any duplicates with the surrogate set.
+        all_desvar = np.vstack((desvar_new, self.obj_surrogate.x_org))
+        _, idx = np.unique(all_desvar, axis=0, return_index=True)
+
         return desvar_new, opt
 
     def objective_callback(self, x, icase):
@@ -302,8 +306,8 @@ class MIMOS(Driver):
         negEI0 = calc_genEI_norm(xval, obj_surrogate, 0)
 
         # Objective 2: Maximize distance from any existing points.
-        x_data = np.array(obj_surrogate.x_org)
-        distance = np.min(np.sum((x_data - x)**2, axis=1))
+        x_data = obj_surrogate.x_org
+        distance = np.min(np.sqrt(np.sum((x_data - x)**2, axis=1)))
 
         return np.array([negEI1, -distance, negEI0]), True, icase
 
@@ -331,15 +335,15 @@ class MIMOS(Driver):
         exist_pt_x = obj_surrogate.x_org
         exist_pt_y = obj_surrogate.y_org
 
-        num_nd = x_nd.shape[0]
+        num_nd, num_desvar = x_nd.shape
         num_obj = y_nd.shape[1]
 
         if num_nd <= 1:
-            distance = np.sum((exist_pt_x - x_nd)**2, axis=1)
+            distance = np.sqrt(np.sum((exist_pt_x - x_nd)**2, axis=1))
 
             if distance > 0:
                 eflag = True
-                x_new = x_NDpt
+                x_new = x_nd
             else:
                 print('No new sample found!')
                 eflag = False
@@ -351,28 +355,27 @@ class MIMOS(Driver):
 
             norm_nd = (y_nd - ideal_pt) / (worst_pt - ideal_pt)
 
-            cluster_centroids, _ = kmeans(norm_nd, actual_pt2sam)
+            cluster_centroids, labels = kmeans2(norm_nd, actual_pt2sam, minit='++')
             clus_sorted_idx = np.argsort(cluster_centroids, axis=0)
 
             idx_temp = clus_sorted_idx.flatten()
             clus_picked = idx_temp[:actual_pt2sam]
 
-            print('hey')
+            x_new = np.zeros((actual_pt2sam, num_desvar))
+            bad_idx = []
+            for ii in range(actual_pt2sam):
+                obj_picked = ii % num_obj + 1
+                centroid_idx = np.where(labels == clus_picked[ii])[0]
+                x_clus = x_nd[centroid_idx, :]
+                y_clus = y_nd[centroid_idx, :]
 
-        """
-        x_new = zeros(length(clus_picked), size(x_NDpt,2));
-        ind=[];
-        for  ii = 1:length(clus_picked)
-            obj_picked = mod(ii-1,num_obj)+1;
-            x_clus = x_NDpt(clus == clus_picked(ii),:);
-            y_clus = y_NDpt(clus == clus_picked(ii),:);
-            [x_new(ii,:),flg] = pickfromcluster1(x_clus, y_clus, obj_picked, exist_pt_x, exist_pt_y);
-            if flg == 1
-                ind = [ind;ii];
-            end
-        end
-        x_new(ind,:) = [];
-        """
+                x_new[ii, :], fail = self.pick_from_cluster(x_clus, y_clus, obj_picked, exist_pt_x,
+                                                            exist_pt_y)
+
+                if fail:
+                    bad_idx.append(ii)
+
+            x_new[bad_idx, :] = 0.0
 
         return x_new, eflag
 
@@ -397,42 +400,47 @@ class MIMOS(Driver):
         -------
         ndarray
             New sample points for amiego.
-        eflag : bool
+        fail : bool
             This is set to True unless no new samples are found.
         """
-        eflag = False
+        fail = False
 
-        distance = np.sum((exist_pt_x - x_clus)**2, axis=1)
-        pos_dist_idx = np.where(distance > 0)
-        pos_dist = distance[pos_dist_idx]
+        if x_clus.shape[0] == 1:
+            x_new = x_clus[0]
+            return x_new, fail
+
+        distance = np.min(np.sqrt(np.sum((exist_pt_x[:, np.newaxis, :] - x_clus[np.newaxis, :, :])**2,
+                                         axis=2)), axis=0)
+        pos_dist_idx = np.where(distance > 0.)[0]
 
         if obj_picked == 1:
             # Expected Improvement (Strategy: Balance)
             # Picks a point that satisfies: [min(EI) and dis>0]
-            idx = np.argmin(y_clus[pos_dist_idx], axis=0)
-            x_new = x_clus[pos_dist_idx[idx]]
+            idx = np.argmin(y_clus[pos_dist_idx, 0], axis=0)
+            x_new = x_clus[pos_dist_idx[idx], :]
 
         elif obj_picked == 2:
             # Reduce void spaces (Strategy: pure exploration)
             # Picks a point that satisfies: max(dis)
+            pos_dist = distance[pos_dist_idx]
             idx = np.argmax(pos_dist)
-            x_new = x_clus[pos_dist_idx[idx]]
+            x_new = x_clus[pos_dist_idx[idx], :]
 
         else:
             # Search around the best solution (Strategy: pure exploitation)
             # Picks a point that satisfies: closest to the best existing point
             idx = np.argmin(exist_pt_y)
-            distance2 = np.sum((exist_pt_x[idx, :] - x_clus)**2, axis=1)
-            pos_dist2_idx = np.where(distance2 > 0)
+            distance2 = np.sqrt(np.sum((exist_pt_x[idx, :] - x_clus)**2, axis=1))
+            pos_dist2_idx = np.where(distance2 > 0)[0]
             pos_dist2 = distance[pos_dist2_idx]
             idx = np.argmin(pos_dist2)
-            x_new = x_clus[pos_dist2_idx[idx]]
+            x_new = x_clus[pos_dist2_idx[idx], :]
 
         if len(x_new) < 1:
-            eflag = True
+            fail = True
             x_new = 0.0 * x_clus
 
-        return x_new, eflag
+        return x_new, fail
 
 
 def calc_genEI_norm(xval, obj_surrogate, gg):
@@ -454,7 +462,7 @@ def calc_genEI_norm(xval, obj_surrogate, gg):
     float
         The generalized expected improvement evaluated at xval.
     """
-    y_min = (obj_surrogate.best_obj_norm - obj_surrogate.Y_mean) / obj_surrogate.Y_std
+    y_min = obj_surrogate.best_obj_norm
 
     X = obj_surrogate.X
     Y = obj_surrogate.Y
@@ -487,6 +495,13 @@ def calc_genEI_norm(xval, obj_surrogate, gg):
 
         phi_s = norm.pdf(z)
         phi_C = norm.cdf(phi_s)
+
+        #%     phi_C_check = (0.5 + 0.5*erf((1/sqrt(2))*((y_min - y_hat)/sqrt(abs(SSqr)))));
+        #%     phi_s_check = (1/sqrt(2*pi))*exp(-(1/2)*((y_min - y_hat)^2/abs(SSqr)));
+        #%     if abs(phi_C - phi_C_check)>1e-10 || abs(phi_s - phi_s_check)>1e-10
+        #%         disp('Values do not match!')
+        #%         keyboard
+        #%     end
 
         T_k = np.array([phi_C, -phi_s])
         SS = 0;

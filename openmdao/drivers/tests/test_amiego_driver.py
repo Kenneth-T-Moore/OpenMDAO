@@ -114,7 +114,7 @@ class TestAMIEGOdriver(unittest.TestCase):
         model.add_objective('comp.f')
 
         prob.driver = AMIEGO_driver()
-        prob.driver.options['disp'] = False
+        prob.driver.options['disp'] = True
         prob.driver.options['multiple_infill'] = True
 
         prob.driver.cont_opt = pyOptSparseDriver()
