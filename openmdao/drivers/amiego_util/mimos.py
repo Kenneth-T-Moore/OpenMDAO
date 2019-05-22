@@ -17,6 +17,8 @@ from math import factorial
 import os
 
 import numpy as np
+from scipy.cluster.vq import kmeans
+from scipy.stats import norm
 
 from openmdao.core.driver import Driver
 from openmdao.drivers.genetic_algorithm_driver import GeneticAlgorithm
@@ -305,7 +307,7 @@ class MIMOS(Driver):
 
         return np.array([negEI1, -distance, negEI0]), True, icase
 
-    def create_cluster(x_nd, y_nd, actual_pt2sam):
+    def create_cluster(self, x_nd, y_nd, actual_pt2sam):
         """
         Create cluster of infill points.
 
@@ -329,9 +331,108 @@ class MIMOS(Driver):
         exist_pt_x = obj_surrogate.x_org
         exist_pt_y = obj_surrogate.y_org
 
+        num_nd = x_nd.shape[0]
+        num_obj = y_nd.shape[1]
 
-def norm_pdf(x, mu=0.0, sigma=1.0):
-    return 1.0 / (sigma * np.sqrt(2 * np.pi)) * np.exp(-(x - mu)**2 * 0.5 * sigma**2)
+        if num_nd <= 1:
+            distance = np.sum((exist_pt_x - x_nd)**2, axis=1)
+
+            if distance > 0:
+                eflag = True
+                x_new = x_NDpt
+            else:
+                print('No new sample found!')
+                eflag = False
+
+        else:
+            eflag = True
+            ideal_pt = np.min(y_nd, axis=0)
+            worst_pt = np.max(y_nd, axis=0)
+
+            norm_nd = (y_nd - ideal_pt) / (worst_pt - ideal_pt)
+
+            cluster_centroids, _ = kmeans(norm_nd, actual_pt2sam)
+            clus_sorted_idx = np.argsort(cluster_centroids, axis=0)
+
+            idx_temp = clus_sorted_idx.flatten()
+            clus_picked = idx_temp[:actual_pt2sam]
+
+            print('hey')
+
+        """
+        x_new = zeros(length(clus_picked), size(x_NDpt,2));
+        ind=[];
+        for  ii = 1:length(clus_picked)
+            obj_picked = mod(ii-1,num_obj)+1;
+            x_clus = x_NDpt(clus == clus_picked(ii),:);
+            y_clus = y_NDpt(clus == clus_picked(ii),:);
+            [x_new(ii,:),flg] = pickfromcluster1(x_clus, y_clus, obj_picked, exist_pt_x, exist_pt_y);
+            if flg == 1
+                ind = [ind;ii];
+            end
+        end
+        x_new(ind,:) = [];
+        """
+
+        return x_new, eflag
+
+    def pick_from_cluster(self, x_clus, y_clus, obj_picked, exist_pt_x, exist_pt_y):
+        """
+        Pick a point from a given cluster.
+
+        Attributes
+        ----------
+        x_clus : ndarray
+            Cluster of non-dominated design points.
+        y_clus : ndarray
+            Objective values at cluster of non dominated points.
+        obj_picked : int
+            Id number of objective from 0, 1, 2.
+        exist_pt_x : ndarray
+            Design points in our set of evaluated desigs.
+        exist_pt_y : ndarray
+            Objectives for our evaluated designs.
+
+        Returns
+        -------
+        ndarray
+            New sample points for amiego.
+        eflag : bool
+            This is set to True unless no new samples are found.
+        """
+        eflag = False
+
+        distance = np.sum((exist_pt_x - x_clus)**2, axis=1)
+        pos_dist_idx = np.where(distance > 0)
+        pos_dist = distance[pos_dist_idx]
+
+        if obj_picked == 1:
+            # Expected Improvement (Strategy: Balance)
+            # Picks a point that satisfies: [min(EI) and dis>0]
+            idx = np.argmin(y_clus[pos_dist_idx], axis=0)
+            x_new = x_clus[pos_dist_idx[idx]]
+
+        elif obj_picked == 2:
+            # Reduce void spaces (Strategy: pure exploration)
+            # Picks a point that satisfies: max(dis)
+            idx = np.argmax(pos_dist)
+            x_new = x_clus[pos_dist_idx[idx]]
+
+        else:
+            # Search around the best solution (Strategy: pure exploitation)
+            # Picks a point that satisfies: closest to the best existing point
+            idx = np.argmin(exist_pt_y)
+            distance2 = np.sum((exist_pt_x[idx, :] - x_clus)**2, axis=1)
+            pos_dist2_idx = np.where(distance2 > 0)
+            pos_dist2 = distance[pos_dist2_idx]
+            idx = np.argmin(pos_dist2)
+            x_new = x_clus[pos_dist2_idx[idx]]
+
+        if len(x_new) < 1:
+            eflag = True
+            x_new = 0.0 * x_clus
+
+        return x_new, eflag
 
 
 def calc_genEI_norm(xval, obj_surrogate, gg):
@@ -345,7 +446,8 @@ def calc_genEI_norm(xval, obj_surrogate, gg):
     obj_surrogate : <AMIEGOKrigingSurrogate>
         Surrogate model of optimized objective with respect to integer design variables.
     gg : float
-        Exponent used in generalized expected improvement.
+        Parameter used in generalized expected improvement to shift between local or global search.
+        Higher values emphasize global search.
 
     Returns
     -------
@@ -383,112 +485,20 @@ def calc_genEI_norm(xval, obj_surrogate, gg):
         z = np.asscalar(z)
         sg = sqrt_SSqr ** gg
 
-        phi_s = norm_pdf(z)
-        phi_C = np.cumsum(phi_s)[0]
+        phi_s = norm.pdf(z)
+        phi_C = norm.cdf(phi_s)
 
         T_k = np.array([phi_C, -phi_s])
         SS = 0;
         for kk in range(gg + 1):
             if kk >= 1:
-                T_k[kk] = -phi_s * z**(kk - 2) + (kk - 2)*T_k[kk - 2]
+                # NOTE: This branch is never reached with our current choice of gg, but it has
+                # been kept for future investigation.
+                T_k[kk] = -phi_s * z**(kk - 1) + (kk - 1)*T_k[kk - 2]
+
             SS += ((-1)**kk) * (factorial(gg) / (factorial(kk) * factorial(gg - kk))) * \
                   (z**(gg - kk)) * T_k[kk]
 
         neg_genEI = -sg * SS
 
     return neg_genEI[0]
-
-
-
-"""
-%% Sub functions
-
-function [x_new,eflag] = create_cluster(y_NDpt,x_NDpt,actual_pt2sam, exist_pt_x, exist_pt_y)
-    %% Normalize the ND points
-    [num_NDpt, num_obj] = size(y_NDpt);
-    if num_NDpt<=1
-        [~,dis] = knnsearch(exist_pt_x, x_NDpt, 'k',1');
-        if dis>0
-            eflag = 1;
-            x_new = x_NDpt;
-        else
-            fprintf('\n%s','No new sample found!')
-            eflag = 0;
-        end
-    else
-        eflag = 1;
-        ideal_pt = zeros(1,num_obj);
-        worst_pt = zeros(1,num_obj);
-        for ii = 1:num_obj
-            ideal_pt(1,ii) = min(y_NDpt(:,ii));
-            worst_pt(1,ii) = max(y_NDpt(:,ii));
-        end
-        norm_NDpt = (y_NDpt - repmat(ideal_pt,[num_NDpt,1]))./...
-            (repmat(worst_pt,[num_NDpt,1]) - repmat(ideal_pt,[num_NDpt,1]));
-
-        [clus, clus_cen] = kmeans(norm_NDpt,actual_pt2sam);
-
-        clus_cen_sorted = zeros(actual_pt2sam,num_obj,num_obj);
-        Ii = zeros(actual_pt2sam,num_obj);
-        for ii = 1:num_obj
-            [~,Ii(:,ii)] = sort(clus_cen(:,ii),1);
-            clus_cen_sorted(:,:,ii) = clus_cen(Ii(:,ii),:);
-        end
-
-        Ii_temp = Ii;
-        num_sam = 0;
-        clus_picked = zeros(actual_pt2sam,1);
-        while num_sam < actual_pt2sam
-            obj_picked = mod(num_sam,num_obj)+1;
-            clus_picked(num_sam+1) = Ii_temp(1,obj_picked);
-            Ii_new = [];
-            for ii = 1:num_obj
-                Ii_temp2 = Ii_temp(:,ii);
-                Ii_temp2(Ii_temp2 == clus_picked(num_sam+1))=[];
-                Ii_new = [Ii_new,Ii_temp2];
-            end
-            num_sam = num_sam+1;
-            Ii_temp = Ii_new;
-        end
-
-        x_new = zeros(length(clus_picked), size(x_NDpt,2));
-        ind=[];
-        for  ii = 1:length(clus_picked)
-           obj_picked = mod(ii-1,num_obj)+1;
-           x_clus = x_NDpt(clus == clus_picked(ii),:);
-           y_clus = y_NDpt(clus == clus_picked(ii),:);
-           [x_new(ii,:),flg] = pickfromcluster1(x_clus, y_clus, obj_picked, exist_pt_x, exist_pt_y);
-           if flg == 1
-               ind = [ind;ii];
-           end
-        end
-        x_new(ind,:) = [];
-    end
-
-function [x_new, flag] = pickfromcluster1(x_clus, y_clus, obj_picked, exist_pt_x, exist_pt_y)
-    flag = 0;
-    [~,dis] = knnsearch(exist_pt_x, x_clus, 'k',1');
-    ind_posi_dis = find(dis>0);
-    posi_dis = dis(ind_posi_dis);
-    if obj_picked == 1 % Expected Improvement (Strategy: Balance)
-        % Picks a point that satisfies: [min(EI) and dis>0]
-        [~,ind] = min(y_clus(ind_posi_dis,1));
-        x_new = x_clus(ind_posi_dis(ind),:);
-    elseif obj_picked == 2 % Reduce void spaces (Strategy: pure exploration)
-        % Picks a point that satisfies: max(dis)
-        [~,ind] = max(posi_dis);
-        x_new = x_clus(ind_posi_dis(ind),:);
-    elseif obj_picked == 3 % Search around the best solution (Strategy: pure exploitation)
-        % Picks a point that satisfies: closest to the best existing point
-        [~,ind_ymin] = min(exist_pt_y);
-        [~,dis2] = knnsearch(exist_pt_x(ind_ymin,:),x_clus,'k',1);
-        ind_posi_dis2 = find(dis2>0);
-        posi_dis2 = dis2(ind_posi_dis2);
-        [~,ind2] = min(posi_dis2);
-        x_new = x_clus(ind_posi_dis2(ind2),:);
-    end
-    if isempty(x_new)
-        flag = 1;
-        x_new=0*x_clus;
-    end
-"""
