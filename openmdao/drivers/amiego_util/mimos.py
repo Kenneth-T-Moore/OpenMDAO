@@ -271,10 +271,12 @@ class MIMOS(Driver):
                                               self._randomstate, Pm, Pc)
 
         # Remove any duplicates with the surrogate set.
-        all_desvar = np.vstack((desvar_new, self.obj_surrogate.x_org))
-        _, idx = np.unique(all_desvar, axis=0, return_index=True)
+        idx = []
+        for j, var in enumerate(desvar_new):
+            if var not in self.obj_surrogate.x_org:
+                idx.append(j)
 
-        return desvar_new, opt
+        return desvar_new[idx], opt
 
     def objective_callback(self, x, icase):
         """
