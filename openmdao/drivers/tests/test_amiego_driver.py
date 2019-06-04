@@ -192,7 +192,6 @@ class TestAMIEGOdriver(unittest.TestCase):
         prob.driver.cont_opt = pyOptSparseDriver()
         prob.driver.cont_opt.options['optimizer'] = 'SNOPT'
         prob.driver.options['disp'] = True
-        prob.driver.options['multiple_infill'] = True
 
         prob.driver.minlp.options['trace_iter'] = 3
         prob.driver.minlp.options['trace_iter_max'] = 5
@@ -234,6 +233,61 @@ class TestAMIEGOdriver(unittest.TestCase):
         assert_rel_error(self, prob['mat'][0], 3, 1e-5)
         assert_rel_error(self, prob['mat'][1], 3, 1e-5)
         # Material 3 can be anything
+
+    def test_three_bar_truss_preopt_mimos(self):
+        prob = Problem()
+        model = prob.model = Group()
+
+        model.add_subsystem('xc_a', IndepVarComp('area', np.array([5.0, 5.0, 5.0])), promotes=['*'])
+        model.add_subsystem('xi_m', IndepVarComp('mat', np.array([1, 1, 1])), promotes=['*'])
+        model.add_subsystem('comp', ThreeBarTrussVector(), promotes=['*'])
+
+        prob.driver = AMIEGO_driver()
+        prob.driver.cont_opt = pyOptSparseDriver()
+        prob.driver.cont_opt.options['optimizer'] = 'SNOPT'
+        prob.driver.options['disp'] = True
+        prob.driver.options['multiple_infill'] = True
+        prob.driver.options['multiple_infill'] = True
+
+        prob.driver.minlp.options['trace_iter'] = 3
+        prob.driver.minlp.options['trace_iter_max'] = 5
+
+        model.add_design_var('area', lower=0.0005, upper=10.0)
+        model.add_design_var('mat', lower=1, upper=4)
+        model.add_objective('mass')
+        model.add_constraint('stress', upper=1.0)
+
+        npt = 5
+        samples = [np.array([ 4.,  2.,  3.]),
+                   np.array([ 1.,  3.,  1.]),
+                   np.array([ 3.,  1.,  2.]),
+                   np.array([ 3.,  4.,  2.]),
+                   np.array([ 1.,  1.,  4.])]
+
+        obj_samples = [np.array([ 20.42278739]),
+                       np.array([ 7.87886979]),
+                       np.array([ 11.40011902]),
+                       np.array([ 13.86862925]),
+                       np.array([ 11.65356799])]
+
+        con_samples = [np.array([ 1.        ,  1.00000028,  0.66329027]),
+                       np.array([ 1.        ,  1.        ,  0.73587506]),
+                       np.array([ 0.49384804,  1.        ,  0.09501274]),
+                       np.array([ 1.00000004,  1.        ,  0.91702808]),
+                       np.array([ 0.85256063,  1.00000001,  0.4147135])]
+
+        prob.driver.sampling = {'mat' : samples}
+        prob.driver.obj_sampling = {'mass' : obj_samples}
+        prob.driver.con_sampling = {'stress' : con_samples}
+        prob.driver.int_con = ['stress']
+
+        prob.setup(check=False)
+
+        prob.run_driver()
+
+        assert_rel_error(self, prob['mass'], 5.287, 1e-3)
+        assert_rel_error(self, prob['mat'][0], 3, 1e-5)
+        assert_rel_error(self, prob['mat'][1], 3, 1e-5)
 
 
 if __name__ == "__main__":
