@@ -60,8 +60,6 @@ class Branch_and_Bound(Driver):
         This is set to True when we find a local minimum.
     fopt : ndarray
         Objective value at optimal design.
-    i_idx : dict
-        Cache of local sizes for each design variable.
     obj_surrogate : <AMIEGOKrigingSurrogate>
         Surrogate model of the objective as a function of the integer design vars.
     xI_lb : ndarray
@@ -116,7 +114,7 @@ class Branch_and_Bound(Driver):
                     '(Default = 0)')
 
         self.dvs = []
-        self.idx_cache = {}
+        self.i_idx_cache = {}
         self.obj_surrogate = None
 
         # We will set this to True if we have found a minimum.
@@ -129,42 +127,6 @@ class Branch_and_Bound(Driver):
         # Experimental Options. TODO: could go into Options
         self.load_balance = True
         self.aggressive_splitting = False
-
-    def _setup_driver(self, problem):
-        """
-        Prepare the driver for execution.
-
-        This is the final thing to run during setup.
-
-        Parameters
-        ----------
-        problem : <Problem>
-            Pointer to the containing problem.
-        """
-        super(Branch_and_Bound, self)._setup_driver(problem)
-
-        # Size our design variables.
-        j = 0
-        for name, val in iteritems(self.get_design_var_values()):
-            self.dvs.append(name)
-            if name in self._designvars_discrete:
-                if np.isscalar(val):
-                    size = 1
-                else:
-                    size = len(val)
-            else:
-                size = len(val)
-            self.idx_cache[name] = (j, j + size)
-            j += size
-
-        # Lower and Upper bounds
-        self.xI_lb = np.empty((j))
-        self.xI_ub = np.empty((j))
-        dv_dict = self._designvars
-        for var in self.dvs:
-            i, j = self.idx_cache[var]
-            self.xI_lb[i:j] = dv_dict[var]['lower']
-            self.xI_ub[i:j] = dv_dict[var]['upper']
 
     def run(self):
         """

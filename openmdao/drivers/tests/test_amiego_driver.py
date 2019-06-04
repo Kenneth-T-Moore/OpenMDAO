@@ -44,7 +44,7 @@ class TestAMIEGOdriver(unittest.TestCase):
         model.add_objective('comp.f')
 
         prob.driver = AMIEGO_driver()
-        prob.driver.options['disp'] = False
+        prob.driver.options['disp'] = True
 
         prob.driver.cont_opt = pyOptSparseDriver()
         prob.driver.cont_opt.options['optimizer'] = 'SNOPT'
@@ -189,10 +189,10 @@ class TestAMIEGOdriver(unittest.TestCase):
         model.add_subsystem('comp', ThreeBarTrussVector(), promotes=['*'])
 
         prob.driver = AMIEGO_driver()
-        #prob.driver.cont_opt.options['tol'] = 1e-12
-        #prob.driver.options['disp'] = False
         prob.driver.cont_opt = pyOptSparseDriver()
         prob.driver.cont_opt.options['optimizer'] = 'SNOPT'
+        prob.driver.options['disp'] = True
+        prob.driver.options['multiple_infill'] = True
 
         prob.driver.minlp.options['trace_iter'] = 3
         prob.driver.minlp.options['trace_iter_max'] = 5

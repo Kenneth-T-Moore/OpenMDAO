@@ -64,7 +64,7 @@ class AMIEGO_driver(Driver):
         Optional constraint values from user-supplied pre-optimized initial samples.
     cont_opt : <Driver>
         Slot for continuous optimizer.
-    i_idx : dict
+    idx_cache : dict
         Cache of local sizes for each design variable.
     i_size : int
         Number of integer design variables.
@@ -128,7 +128,7 @@ class AMIEGO_driver(Driver):
 
         self.c_dvs = []
         self.i_size = 0
-        self.i_idx = OrderedDict()
+        self.i_idx_cache = OrderedDict()
         self.n_train = 0
 
         # Initial Sampling of integer design points
@@ -167,10 +167,7 @@ class AMIEGO_driver(Driver):
             cont_opt.options['disp'] = self.options['disp']
 
         minlp = self.minlp
-        minlp._setup_driver(problem)
-        minlp.options['disp'] = self.options['disp']
-        if self.options['multiple_infill']:
-            minlp.options['bits'] = self.options['bits']
+        minlp._designvars = OrderedDict()
 
         # Identify and size our design variables.
         prom2abs = problem.model._var_allprocs_prom2abs_list['output']
@@ -215,22 +212,22 @@ class AMIEGO_driver(Driver):
                         i_size = len(val)
                 else:
                     i_size = len(val)
-                self.i_idx[name] = i_size
+                self.i_idx_cache[name] = i_size
             else:
                 self.c_dvs.append(name)
 
         j = 0
-        for var, idx in iteritems(self.i_idx):
+        for var, idx in iteritems(self.i_idx_cache):
             idx_tuple = (j, j + idx)
             j += idx
-            self.i_idx[var] = idx_tuple
+            self.i_idx_cache[var] = idx_tuple
         self.i_size = j
 
         # Lower and Upper bounds for integer desvars
         self.xI_lb = np.empty((self.i_size, ))
         self.xI_ub = np.empty((self.i_size, ))
         dv_dict = self._designvars
-        for var, idx in iteritems(self.i_idx):
+        for var, idx in iteritems(self.i_idx_cache):
             i, j = idx
             self.xI_lb[i:j] = dv_dict[var]['lower']
             self.xI_ub[i:j] = dv_dict[var]['upper']
@@ -240,12 +237,13 @@ class AMIEGO_driver(Driver):
             cont_opt._designvars[name] = self._designvars[name]
 
         # MINLP Optimization only gets discrete desvars
-        for name in self.i_idx:
+        for name in self.i_idx_cache:
             minlp._designvars[name] = self._designvars[name]
 
         # Both MINLP and Continuous see the objective
         cont_opt._objs = self._objs
         minlp._objs = self._objs
+        minlp.i_idx_cache = self.i_idx_cache
 
         # Continuous optimizer sees all constraints.
         for name, con in iteritems(self._cons):
@@ -253,6 +251,10 @@ class AMIEGO_driver(Driver):
 
         # Finish setting up the subdrivers.
         cont_opt._setup_driver(problem)
+        minlp._setup_driver(problem)
+        minlp.options['disp'] = self.options['disp']
+        if self.options['multiple_infill']:
+            minlp.options['bits'] = self.options['bits']
 
     def _update_voi_meta(self, model):
         """
@@ -329,7 +331,7 @@ class AMIEGO_driver(Driver):
             for i_train in range(n_train):
 
                 xx_i = np.empty((self.i_size, ))
-                for var, idx in iteritems(self.i_idx):
+                for var, idx in iteritems(self.i_idx_cache):
                     i, j = idx
                     xx_i[i:j] = self.sampling[var][i_train]
 
@@ -367,7 +369,7 @@ class AMIEGO_driver(Driver):
             for i_train in range(n_train):
 
                 xx_i = np.empty((self.i_size, ))
-                for name, idx in iteritems(self.i_idx):
+                for name, idx in iteritems(self.i_idx_cache):
                     i, j = idx
                     xx_i[i:j] = self.sampling[name][i_train, :]
 
@@ -411,7 +413,7 @@ class AMIEGO_driver(Driver):
                           x_i[i_run])
 
                 # Set Integer design variables
-                for var, idx in iteritems(self.i_idx):
+                for var, idx in iteritems(self.i_idx_cache):
                     i, j = idx
                     self.set_design_var(var, x_i[i_run][i:j])
 
@@ -455,7 +457,7 @@ class AMIEGO_driver(Driver):
                     # Save integer and continuous DV
                     desvars = self.get_design_var_values()
 
-                    for name in self.i_idx:
+                    for name in self.i_idx_cache:
                         val = desvars[name]
                         if name in self._designvars_discrete:
                             if np.isscalar(val):
@@ -605,7 +607,10 @@ class AMIEGO_driver(Driver):
                             ec2 = 1
                             break
 
-                    x_i.append(x0I)
+                    if self.options['multiple_infill']:
+                        x_i.extend(x0I)
+                    else:
+                        x_i.append(x0I)
 
                 else:
                     ec2 = 1
@@ -617,7 +622,10 @@ class AMIEGO_driver(Driver):
             # ------------------------------------------------------------------
 
             c_start = c_end
-            c_end += 1
+            if self.options['multiple_infill']:
+                c_end += len(x0I)
+            else:
+                c_end += 1
 
             term = np.abs(ei_tol_rel * best_obj_norm)
             if (not pre_opt and ei_max <= term) or ec2 == 1 or tot_newpt_added >= max_pt_lim:

@@ -96,7 +96,7 @@ class MIMOS(Driver):
                              allow_none=True)
 
         self.dvs = []
-        self.idx_cache = {}
+        self.i_idx_cache = {}
         self._ga = None
 
         # We will set this to True if we have found a minimum.
@@ -124,29 +124,6 @@ class MIMOS(Driver):
             Pointer to the containing problem.
         """
         super(MIMOS, self)._setup_driver(problem)
-
-        # Size our design variables.
-        j = 0
-        for name, val in iteritems(self.get_design_var_values()):
-            self.dvs.append(name)
-            if name in self._designvars_discrete:
-                if np.isscalar(val):
-                    size = 1
-                else:
-                    size = len(val)
-            else:
-                size = len(val)
-            self.idx_cache[name] = (j, j + size)
-            j += size
-
-        # Lower and Upper bounds
-        self.xI_lb = np.empty((j))
-        self.xI_ub = np.empty((j))
-        dv_dict = self._designvars
-        for var in self.dvs:
-            i, j = self.idx_cache[var]
-            self.xI_lb[i:j] = dv_dict[var]['lower']
-            self.xI_ub[i:j] = dv_dict[var]['upper']
 
         model_mpi = None
         comm = self._problem.comm
@@ -202,7 +179,7 @@ class MIMOS(Driver):
         Returns
         -------
         ndarray
-            Non dominated design points.
+            Non-dominated design points.
         ndarray
             Objective values at non dominated points.
         """
@@ -228,14 +205,14 @@ class MIMOS(Driver):
         desvar_vals = self.get_design_var_values()
         x0 = np.empty(count)
         for name, meta in iteritems(desvars):
-            i, j = self.idx_cache[name]
+            i, j = self.i_idx_cache[name]
             x0[i:j] = desvar_vals[name]
 
         # Bits of resolution
         abs2prom = model._var_abs2prom['output']
 
         for name, meta in iteritems(desvars):
-            i, j = self.idx_cache[name]
+            i, j = self.i_idx_cache[name]
 
             if name in self._designvars_discrete:
                 prom_name = name
@@ -273,10 +250,10 @@ class MIMOS(Driver):
         # Remove any duplicates with the surrogate set.
         idx = []
         for j, var in enumerate(desvar_new):
-            if var not in self.obj_surrogate.x_org:
+            if np.all((var == self.obj_surrogate.x_org).all(1) == False):
                 idx.append(j)
 
-        return desvar_new[idx], opt
+        return desvar_new[idx], opt[idx]
 
     def objective_callback(self, x, icase):
         """
@@ -343,12 +320,17 @@ class MIMOS(Driver):
         if num_nd <= 1:
             distance = np.sqrt(np.sum((exist_pt_x - x_nd)**2, axis=1))
 
-            if distance > 0:
+            if x_nd in exist_pt_x:
+                print('No new sample found!')
+                x_new = []
+                eflag = False
+            else:
                 eflag = True
                 x_new = x_nd
-            else:
-                print('No new sample found!')
-                eflag = False
+
+        elif num_nd == actual_pt2sam:
+            x_new = x_nd
+            eflag = True
 
         else:
             eflag = True
@@ -360,19 +342,25 @@ class MIMOS(Driver):
             cluster_centroids, labels = kmeans2(norm_nd, actual_pt2sam, minit='++')
             clus_sorted_idx = np.argsort(cluster_centroids, axis=0)
 
-            idx_temp = clus_sorted_idx.flatten()
-            clus_picked = idx_temp[:actual_pt2sam]
+            cluster_stack = list(clus_sorted_idx.flatten())
 
+            # Centroid ids are sorted by objective. If we flatten this, it is basically a stack
+            # with the entries in the correct order. When we use an entry, we purge all duplicates
+            # from the rankings in the other objectives and take the first one again.
+            # This will always give us at one from each cluster.
             x_new = np.zeros((actual_pt2sam, num_desvar))
             bad_idx = []
             for ii in range(actual_pt2sam):
-                obj_picked = ii % num_obj + 1
-                centroid_idx = np.where(labels == clus_picked[ii])[0]
+                picked = cluster_stack[0]
+                centroid_idx = np.where(labels == picked)[0]
                 x_clus = x_nd[centroid_idx, :]
                 y_clus = y_nd[centroid_idx, :]
 
+                obj_picked = ii % num_obj + 1
                 x_new[ii, :], fail = self.pick_from_cluster(x_clus, y_clus, obj_picked, exist_pt_x,
                                                             exist_pt_y)
+
+                cluster_stack = [val for val in cluster_stack if val != picked]
 
                 if fail:
                     bad_idx.append(ii)
@@ -485,8 +473,7 @@ def calc_genEI_norm(xval, obj_surrogate, gg):
                        (1.0 - np.einsum('i->', term0))**2 / np.einsum('ij->', R_inv))
 
     if SSqr <= 1.0e-30:
-        if abs(SSqr) <= 1.0e-30:
-            neg_genEI = -0.0
+        neg_genEI = -0.0
 
     else:
         # Calculate the generalized expected improvement function
@@ -496,7 +483,7 @@ def calc_genEI_norm(xval, obj_surrogate, gg):
         sg = sqrt_SSqr ** gg
 
         phi_s = norm.pdf(z)
-        phi_C = norm.cdf(phi_s)
+        phi_C = norm.cdf(z)
 
         #%     phi_C_check = (0.5 + 0.5*erf((1/sqrt(2))*((y_min - y_hat)/sqrt(abs(SSqr)))));
         #%     phi_s_check = (1/sqrt(2*pi))*exp(-(1/2)*((y_min - y_hat)^2/abs(SSqr)));
@@ -516,6 +503,6 @@ def calc_genEI_norm(xval, obj_surrogate, gg):
             SS += ((-1)**kk) * (factorial(gg) / (factorial(kk) * factorial(gg - kk))) * \
                   (z**(gg - kk)) * T_k[kk]
 
-        neg_genEI = -sg * SS
+        neg_genEI = -sg[0] * SS
 
-    return neg_genEI[0]
+    return neg_genEI
