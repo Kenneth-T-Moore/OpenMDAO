@@ -96,25 +96,6 @@ class AMIEGO_driver(Driver):
         self.supports['two_sided_constraints'] = True
         self.supports['integer_design_vars'] = True
 
-        # Options
-        opt = self.options
-        opt.declare('disp', True,
-                    desc='Set to False to prevent printing of iteration messages.')
-        opt.declare('ei_tol_rel', 0.001, lower=0.0,
-                    desc='Relative tolerance on the expected improvement.')
-        opt.declare('max_infill_points', 10, lower=1,
-                    desc='Maximum number of additional points per design variable.')
-        opt.declare('r_penalty', 2.0,
-                    desc='Constraint penalty applied to objective.')
-        opt.declare('multiple_infill', False,
-                    desc='Set to True to use MIMOS Multi-Objective Multiple Infill points.')
-        self.options.declare('bits', default={}, types=(dict),
-                             desc='Number of bits of resolution. Default is an empty dict, where '
-                             'every unspecified variable is assumed to be integer, and the number '
-                             'of bits is calculated automatically. If you have a continuous var, '
-                             'you should set a bits value as a key in this dictionary. Only used '
-                             'if the "mimos" option is set to True.')
-
         # The default continuous optimizer. User can slot a different one
         self.cont_opt = ScipyOptimizeDriver()
         self.cont_opt.options['optimizer'] = 'SLSQP'
@@ -143,6 +124,28 @@ class AMIEGO_driver(Driver):
 
         # User can specify a subset of integer constraints.
         self.int_con = None
+
+    def _declare_options(self):
+        """
+        Declare options before kwargs are processed in the init method.
+        """
+        opt = self.options
+        opt.declare('disp', True,
+                    desc='Set to False to prevent printing of iteration messages.')
+        opt.declare('ei_tol_rel', 0.001, lower=0.0,
+                    desc='Relative tolerance on the expected improvement.')
+        opt.declare('max_infill_points', 10, lower=1,
+                    desc='Maximum number of additional points per design variable.')
+        opt.declare('r_penalty', 2.0,
+                    desc='Constraint penalty applied to objective.')
+        opt.declare('multiple_infill', False,
+                    desc='Set to True to use MIMOS Multi-Objective Multiple Infill points.')
+        self.options.declare('bits', default={}, types=(dict),
+                             desc='Number of bits of resolution. Default is an empty dict, where '
+                             'every unspecified variable is assumed to be integer, and the number '
+                             'of bits is calculated automatically. If you have a continuous var, '
+                             'you should set a bits value as a key in this dictionary. Only used '
+                             'if the "mimos" option is set to True.')
 
     def _setup_driver(self, problem):
         """
@@ -374,7 +377,7 @@ class AMIEGO_driver(Driver):
                 xx_i = np.empty((self.i_size, ))
                 for name, idx in iteritems(self.i_idx_cache):
                     i, j = idx
-                    xx_i[i:j] = self.sampling[name][i_train, :]
+                    xx_i[i:j] = self.sampling[name][i_train]
 
                 x_i.append(xx_i)
 
@@ -518,7 +521,6 @@ class AMIEGO_driver(Driver):
                 g_mean = np.mean(val, axis=0)
                 g_std = np.std(val, axis=0)
                 g_std[g_std == 0.] = 1.0
-                g_norm = (val - g_mean) / g_std
                 g_vio_ub = val_u / g_std
                 g_vio_lb = val_l / g_std
 

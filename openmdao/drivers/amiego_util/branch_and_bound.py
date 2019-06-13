@@ -20,13 +20,13 @@ Implemented in OpenMDAO, Aug 2016, Kenneth T. Moore
 from __future__ import print_function
 
 from collections import OrderedDict
+import os
 from time import time
-from six import iteritems
 from six.moves import range
 
 import numpy as np
 from scipy.special import erf
-from pyDOE import lhs
+from pyDOE2 import lhs
 
 from openmdao.core.driver import Driver
 from openmdao.drivers.genetic_algorithm_driver import GeneticAlgorithm
@@ -36,7 +36,7 @@ from openmdao.utils.general_utils import set_pyoptsparse_opt
 
 # check that pyoptsparse is installed
 # if it is, try to use SNOPT but fall back to SLSQP
-OPT, OPTIMIZER = set_pyoptsparse_opt('SNOPT')
+_, OPTIMIZER = set_pyoptsparse_opt('SNOPT')
 
 
 class Branch_and_Bound(Driver):
@@ -68,6 +68,8 @@ class Branch_and_Bound(Driver):
         Upper bound of the integer design variables.
     xopt : ndarray
         Optimal design.
+    _randomstate : np.random.RandomState, int
+         Random state (or seed-number) which controls the seed and random draws.
     """
 
     def __init__(self):
@@ -86,7 +88,31 @@ class Branch_and_Bound(Driver):
         self.supports['gradients'] = False
         self.supports['integer_design_vars'] = True
 
-        # Options
+        self.dvs = []
+        self.i_idx_cache = {}
+        self.obj_surrogate = None
+
+        # We will set this to True if we have found a minimum.
+        self.eflag_MINLPBB = False
+
+        # Amiego retrieves optimal design and optimum upon completion.
+        self.xopt = None
+        self.fopt = None
+
+        # Experimental Options. TODO: could go into Options
+        self.load_balance = True
+        self.aggressive_splitting = False
+
+        # Random state can be set for predictability during testing
+        if 'SimpleGADriver_seed' in os.environ:
+            self._randomstate = int(os.environ['SimpleGADriver_seed'])
+        else:
+            self._randomstate = None
+
+    def _declare_options(self):
+        """
+        Declare options before kwargs are processed in the init method.
+        """
         opt = self.options
         opt.declare('active_tol', 1.0e-6, lower=0.0,
                     desc='Tolerance (2-norm) for triggering active set '
@@ -112,21 +138,6 @@ class Branch_and_Bound(Driver):
         opt.declare('local_search', 0, values=[0, 1, 2],
                     desc='Local search type. Set to 0 for GA, 1 for LHS, 2 for LHS + SQP '
                     '(Default = 0)')
-
-        self.dvs = []
-        self.i_idx_cache = {}
-        self.obj_surrogate = None
-
-        # We will set this to True if we have found a minimum.
-        self.eflag_MINLPBB = False
-
-        # Amiego retrieves optimal design and optimum upon completion.
-        self.xopt = None
-        self.fopt = None
-
-        # Experimental Options. TODO: could go into Options
-        self.load_balance = True
-        self.aggressive_splitting = False
 
     def run(self):
         """
@@ -169,7 +180,8 @@ class Branch_and_Bound(Driver):
         xU_iter = self.xI_ub.copy()
 
         num_init_sam = num_des
-        init_sam = lhs(num_des, samples=num_init_sam, criterion='center')
+        init_sam = lhs(num_des, samples=num_init_sam, criterion='center',
+                       random_state=self._randomstate)
         for ii in range(num_init_sam):
             xopt_ii = np.round(xL_iter + init_sam[ii] * (xU_iter - xL_iter)).reshape(num_des)
             fopt_ii = self.objective_callback(xopt_ii)
@@ -407,7 +419,8 @@ class Branch_and_Bound(Driver):
             t0 = time()
             self.xU_iter = xU_iter
             xloc_iter_new, floc_iter_new, nfit = \
-                ga.execute_ga(xL_iter, xL_iter, vub_vir, vub_vir, bits, pop_size, max_gen, None)
+                ga.execute_ga(xL_iter, xL_iter, vub_vir, vub_vir, bits, pop_size, max_gen,
+                              self._randomstate)
             t_GA = time() - t0
 
             if floc_iter_new < floc_iter:
@@ -418,7 +431,8 @@ class Branch_and_Bound(Driver):
         else:
             # TODO Future research on sampling here
             num_samples = np.round(np.max([10, np.min([50, num_des / nodeHist.priority_flag])]))
-            init_sam_node = lhs(num_des, samples=num_samples, criterion='center')
+            init_sam_node = lhs(num_des, samples=num_samples, criterion='center',
+                                random_state=self._randomstate)
             t_GA = 0.
 
             for ii in range(int(num_samples)):
@@ -529,7 +543,7 @@ class Branch_and_Bound(Driver):
                     # --------------------------------------------------------------
 
                     priority_flag = 0
-                    if LBD_NegConEI < np.inf and LBD_prev < np.inf:
+                    if LBD_NegConEI < np.inf and LBD_prev > -np.inf:
                         if np.abs((LBD_prev - LBD_NegConEI) / LBD_prev) < 0.005:
                             priority_flag = 1
 
@@ -561,7 +575,7 @@ class Branch_and_Bound(Driver):
         if floc_iter < UBD:
             UBD = floc_iter
             fopt = floc_iter
-            xopt = xloc_iter.copy().reshape(num_des)
+            xopt = xloc_iter.reshape(num_des)
 
         if disp:
             if (self.iter_count - 1) % 25 == 0:

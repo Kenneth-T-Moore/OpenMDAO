@@ -133,12 +133,15 @@ class TestAMIEGOdriver(unittest.TestCase):
         prob = Problem()
         model = prob.model = Group()
 
-        model.add_subsystem('xc_a1', IndepVarComp('area1', 5.0), promotes=['*'])
-        model.add_subsystem('xc_a2', IndepVarComp('area2', 5.0), promotes=['*'])
-        model.add_subsystem('xc_a3', IndepVarComp('area3', 5.0), promotes=['*'])
-        model.add_subsystem('xi_m1', IndepVarComp('mat1', 1), promotes=['*'])
-        model.add_subsystem('xi_m2', IndepVarComp('mat2', 1), promotes=['*'])
-        model.add_subsystem('xi_m3', IndepVarComp('mat3', 1), promotes=['*'])
+        ivc = IndepVarComp()
+        ivc.add_output('area1', 5.0, units='cm**2')
+        ivc.add_output('area2', 5.0, units='cm**2')
+        ivc.add_output('area3', 5.0, units='cm**2')
+        ivc.add_output('mat1', 1)
+        ivc.add_output('mat2', 1)
+        ivc.add_output('mat3', 1)
+
+        model.add_subsystem('p', ivc, promotes=['*'])
         model.add_subsystem('comp', ThreeBarTruss(), promotes=['*'])
 
         prob.driver = AMIEGO_driver()
@@ -147,6 +150,9 @@ class TestAMIEGOdriver(unittest.TestCase):
 
         prob.driver.minlp.options['trace_iter'] = 3
         prob.driver.minlp.options['trace_iter_max'] = 5
+        prob.driver.minlp._randomstate = 1
+
+        prob.driver.options['max_infill_points'] = 4
 
         model.add_design_var('area1', lower=0.0005, upper=10.0)
         model.add_design_var('area2', lower=0.0005, upper=10.0)
@@ -181,8 +187,12 @@ class TestAMIEGOdriver(unittest.TestCase):
         prob = Problem()
         model = prob.model = Group()
 
-        model.add_subsystem('xc_a', IndepVarComp('area', np.array([5.0, 5.0, 5.0])), promotes=['*'])
-        model.add_subsystem('xi_m', IndepVarComp('mat', np.array([1, 1, 1])), promotes=['*'])
+        ivc = IndepVarComp()
+        ivc.add_output('area', np.array([5.0, 5.0, 5.0]), units='cm**2')
+        ivc.add_output('mat', np.array([1, 1, 1]))
+
+        model.add_subsystem('p', ivc, promotes=['*'])
+
         model.add_subsystem('comp', ThreeBarTrussVector(), promotes=['*'])
 
         prob.driver = AMIEGO_driver()
@@ -192,6 +202,9 @@ class TestAMIEGOdriver(unittest.TestCase):
 
         prob.driver.minlp.options['trace_iter'] = 3
         prob.driver.minlp.options['trace_iter_max'] = 5
+        prob.driver.minlp._randomstate = 1
+
+        prob.driver.options['max_infill_points'] = 4
 
         model.add_design_var('area', lower=0.0005, upper=10.0)
         model.add_design_var('mat', lower=1, upper=4)
@@ -205,17 +218,17 @@ class TestAMIEGOdriver(unittest.TestCase):
                    np.array([ 3.,  4.,  2.]),
                    np.array([ 1.,  1.,  4.])]
 
-        obj_samples = [np.array([ 20.42278739]),
-                       np.array([ 7.87886979]),
-                       np.array([ 11.40011902]),
-                       np.array([ 13.86862925]),
-                       np.array([ 11.65356799])]
+        obj_samples = [np.array([ 20.33476318]),
+                       np.array([ 15.70506926]),
+                       np.array([ 11.400119]),
+                       np.array([ 13.86862845]),
+                       np.array([ 7.82279865])]
 
-        con_samples = [np.array([ 1.        ,  1.00000028,  0.66329027]),
-                       np.array([ 1.        ,  1.        ,  0.73587506]),
+        con_samples = [np.array([1.21567329, 0.41459045, 0.11071787]),
+                       np.array([1.00000066, 0.37435425, 0.35066965]),
                        np.array([ 0.49384804,  1.        ,  0.09501274]),
                        np.array([ 1.00000004,  1.        ,  0.91702808]),
-                       np.array([ 0.85256063,  1.00000001,  0.4147135])]
+                       np.array([1.29927534, 1.05250939, 0.69434504])]
 
         prob.driver.sampling = {'mat' : samples}
         prob.driver.obj_sampling = {'mass' : obj_samples}
@@ -235,8 +248,11 @@ class TestAMIEGOdriver(unittest.TestCase):
         prob = Problem()
         model = prob.model = Group()
 
-        model.add_subsystem('xc_a', IndepVarComp('area', np.array([5.0, 5.0, 5.0])), promotes=['*'])
-        model.add_subsystem('xi_m', IndepVarComp('mat', np.array([1, 1, 1])), promotes=['*'])
+        ivc = IndepVarComp()
+        ivc.add_output('area', np.array([5.0, 5.0, 5.0]), units='cm**2')
+        ivc.add_output('mat', np.array([1, 1, 1]))
+
+        model.add_subsystem('p', ivc, promotes=['*'])
         model.add_subsystem('comp', ThreeBarTrussVector(), promotes=['*'])
 
         prob.driver = AMIEGO_driver()
@@ -244,10 +260,12 @@ class TestAMIEGOdriver(unittest.TestCase):
         prob.driver.cont_opt.options['optimizer'] = 'SNOPT'
         prob.driver.options['disp'] = True
         prob.driver.options['multiple_infill'] = True
-        prob.driver.options['multiple_infill'] = True
 
         prob.driver.minlp.options['trace_iter'] = 3
         prob.driver.minlp.options['trace_iter_max'] = 5
+        prob.driver.minlp._randomstate = 1
+
+        prob.driver.options['max_infill_points'] = 5
 
         model.add_design_var('area', lower=0.0005, upper=10.0)
         model.add_design_var('mat', lower=1, upper=4)
@@ -261,17 +279,17 @@ class TestAMIEGOdriver(unittest.TestCase):
                    np.array([ 3.,  4.,  2.]),
                    np.array([ 1.,  1.,  4.])]
 
-        obj_samples = [np.array([ 20.42278739]),
-                       np.array([ 7.87886979]),
-                       np.array([ 11.40011902]),
-                       np.array([ 13.86862925]),
-                       np.array([ 11.65356799])]
+        obj_samples = [np.array([ 20.33476318]),
+                       np.array([ 15.70506926]),
+                       np.array([ 11.400119]),
+                       np.array([ 13.86862845]),
+                       np.array([ 7.82279865])]
 
-        con_samples = [np.array([ 1.        ,  1.00000028,  0.66329027]),
-                       np.array([ 1.        ,  1.        ,  0.73587506]),
+        con_samples = [np.array([1.21567329, 0.41459045, 0.11071787]),
+                       np.array([1.00000066, 0.37435425, 0.35066965]),
                        np.array([ 0.49384804,  1.        ,  0.09501274]),
                        np.array([ 1.00000004,  1.        ,  0.91702808]),
-                       np.array([ 0.85256063,  1.00000001,  0.4147135])]
+                       np.array([1.29927534, 1.05250939, 0.69434504])]
 
         prob.driver.sampling = {'mat' : samples}
         prob.driver.obj_sampling = {'mass' : obj_samples}
