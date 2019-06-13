@@ -230,6 +230,8 @@ class SimpleGADriver(Driver):
         Pm = self.options['Pm']  # if None, it will be calculated in execute_ga()
         Pc = self.options['Pc']
 
+        self._check_for_missing_objective()
+
         if compute_pareto:
             self._ga.nobj = len(self._objs)
 

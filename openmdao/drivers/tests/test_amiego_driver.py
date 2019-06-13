@@ -142,9 +142,6 @@ class TestAMIEGOdriver(unittest.TestCase):
         model.add_subsystem('comp', ThreeBarTruss(), promotes=['*'])
 
         prob.driver = AMIEGO_driver()
-        #prob.driver.cont_opt.options['tol'] = 1e-12
-        #prob.driver.options['disp'] = False
-        #model.approx_totals()
         prob.driver.cont_opt = pyOptSparseDriver()
         prob.driver.cont_opt.options['optimizer'] = 'SNOPT'
 

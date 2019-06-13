@@ -357,7 +357,10 @@ class AMIEGO_driver(Driver):
                     if self.sampling_eflag[j] == 1 and (val < obj[lowest]):
                         lowest = j
 
-            best_obj = obj[lowest].copy()
+                best_obj = obj[lowest].copy()
+
+            else:
+                best_obj = min(obj).copy()
 
         # Prepare to optimize the initial sampling points
         else:
