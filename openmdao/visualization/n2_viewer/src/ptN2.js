@@ -244,6 +244,27 @@ function PtN2Diagram(parentDiv, modelData) {
     Update(computeNewTreeLayout=false);
     SetupLegend(d3, d3ContentDiv);
 
+    var system_block_menu = [{
+        name: 'create',
+        title: 'create button',
+        fun: function () {
+            alert('i am add button')
+        }
+    }, {
+        name: 'update',
+        title: 'update button',
+        fun: function () {
+            alert('i am update button')
+        }
+    }, {
+        name: 'delete',
+        title: 'delete button',
+        fun: function () {
+            alert('i am delete button')
+        }
+    }];
+
+
     function Update(computeNewTreeLayout=true) {
         parentDiv.querySelector("#currentPathId").innerHTML = "PATH: root" + ((zoomedElement.parent) ? "." : "") + zoomedElement.absPathName;
 
@@ -1050,6 +1071,8 @@ function PtN2Diagram(parentDiv, modelData) {
 
     //right click => collapse
     function RightClick(d, ele) {
+    }
+    function CollapseFromRightClick(d, ele) {
         var e = d3.event;
         lastLeftClickedEle = d;
         lastRightClickedObj = d;
