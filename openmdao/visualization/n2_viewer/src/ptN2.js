@@ -1,3 +1,199 @@
+(function(root, factory) {
+	if (typeof module === 'object' && module.exports) {
+		var d3 = require('d3');
+		module.exports = factory(d3);
+	} else if(typeof define === 'function' && define.amd) {
+		try {
+			var d3 = require('d3');
+		} catch (e) {
+			d3 = root.d3;
+		}
+
+		d3.contextMenu = factory(d3);
+		define([], function() {
+			return d3.contextMenu;
+		});
+	} else if(root.d3) {
+		root.d3.contextMenu = factory(root.d3);
+	}
+}(this,
+	function (d3) {
+		var utils = {
+			noop: function () {},
+
+			/**
+			 * @param {*} value
+			 * @returns {Boolean}
+			 */
+			isFn: function (value) {
+				return typeof value === 'function';
+			},
+
+			/**
+			 * @param {*} value
+			 * @returns {Function}
+			 */
+			const: function (value) {
+				return function () { return value; };
+			},
+
+			/**
+			 * @param {Function|*} value
+			 * @param {*} [fallback]
+			 * @returns {Function}
+			 */
+			toFactory: function (value, fallback) {
+				value = (value === undefined) ? fallback : value;
+				return utils.isFn(value) ? value : utils.const(value);
+			}
+		};
+
+		// global state for d3-context-menu
+		var d3ContextMenu = null;
+
+		var closeMenu = function () {
+			// global state is populated if a menu is currently opened
+			if (d3ContextMenu) {
+				d3.select('.d3-context-menu').remove();
+				d3.select('body').on('mousedown.d3-context-menu', null);
+				d3ContextMenu.boundCloseCallback();
+				d3ContextMenu = null;
+			}
+		};
+
+		/**
+		 * Calls API method (e.g. `close`) or
+		 * returns handler function for the `contextmenu` event
+		 * @param {Function|Array|String} menuItems
+		 * @param {Function|Object} config
+		 * @returns {?Function}
+		 */
+		return function (menuItems, config) {
+			// allow for `d3.contextMenu('close');` calls
+			// to programatically close the menu
+			if (menuItems === 'close') {
+				return closeMenu();
+			}
+
+			// for convenience, make `menuItems` a factory
+			// and `config` an object
+			menuItems = utils.toFactory(menuItems);
+
+			if (utils.isFn(config)) {
+				config = { onOpen: config };
+			}
+			else {
+				config = config || {};
+			}
+
+			// resolve config
+			var openCallback = config.onOpen || utils.noop;
+			var closeCallback = config.onClose || utils.noop;
+			var positionFactory = utils.toFactory(config.position);
+			var themeFactory = utils.toFactory(config.theme, 'd3-context-menu-theme');
+
+			/**
+			 * Context menu event handler
+			 * @param {*} data
+			 * @param {Number} index
+			 */
+			return function (data, index) {
+				var element = this;
+
+				// close any menu that's already opened
+				closeMenu();
+
+				// store close callback already bound to the correct args and scope
+				d3ContextMenu = {
+					boundCloseCallback: closeCallback.bind(element, data, index)
+				};
+
+				// create the div element that will hold the context menu
+				d3.selectAll('.d3-context-menu').data([1])
+					.enter()
+					.append('div')
+					.attr('class', 'd3-context-menu ' + themeFactory.bind(element)(data, index));
+
+				// close menu on mousedown outside
+				d3.select('body').on('mousedown.d3-context-menu', closeMenu);
+				d3.select('body').on('click.d3-context-menu', closeMenu);
+
+				var parent = d3.selectAll('.d3-context-menu')
+					.on('contextmenu', function() {
+						closeMenu();
+						d3.event.preventDefault();
+						d3.event.stopPropagation();
+					})
+					.append('ul');
+
+				parent.call(createNestedMenu, element);
+
+				// the openCallback allows an action to fire before the menu is displayed
+				// an example usage would be closing a tooltip
+				if (openCallback.bind(element)(data, index) === false) {
+					return;
+				}
+
+				// get position
+				var position = positionFactory.bind(element)(data, index);
+
+				// display context menu
+				d3.select('.d3-context-menu')
+					.style('left', (position ? position.left : d3.event.pageX - 2) + 'px')
+					.style('top', (position ? position.top : d3.event.pageY - 2) + 'px')
+					.style('display', 'block');
+
+				d3.event.preventDefault();
+				d3.event.stopPropagation();
+
+
+				function createNestedMenu(parent, root, depth = 0) {
+					var resolve = function (value) {
+						return utils.toFactory(value).call(root, data, index);
+					};
+
+					parent.selectAll('li')
+					.data(function (d) {
+							var baseData = depth === 0 ? menuItems : d.children;
+							return resolve(baseData);
+						})
+						.enter()
+						.append('li')
+						.each(function (d) {
+							// get value of each data
+							var isDivider = !!resolve(d.divider);
+							var isDisabled = !!resolve(d.disabled);
+							var hasChildren = !!resolve(d.children);
+							var hasAction = !!d.action;
+							var text = isDivider ? '<hr>' : resolve(d.title);
+
+							var listItem = d3.select(this)
+								.classed('is-divider', isDivider)
+								.classed('is-disabled', isDisabled)
+								.classed('is-header', !hasChildren && !hasAction)
+								.classed('is-parent', hasChildren)
+								.html(text)
+								.on('click', function () {
+									// do nothing if disabled or no action
+									if (isDisabled || !hasAction) return;
+
+									d.action.call(root, data, index);
+									closeMenu();
+								});
+
+							if (hasChildren) {
+								// create children(`next parent`) and call recursive
+								var children = listItem.append('ul').classed('is-children', true);
+								createNestedMenu(children, root, ++depth)
+							}
+						});
+				}
+			};
+		};
+	}
+));
+
+
 function PtN2Diagram(parentDiv, modelJSON) {
     var model = new ModelData(modelJSON);
 
@@ -93,6 +289,18 @@ function PtN2Diagram(parentDiv, modelJSON) {
         option.onclick = f;
         collapseDepthElement.appendChild(option);
     }
+
+    var menu = [{
+                    title: 'Collapse',
+                    action: function (data, index) {
+                        CollapseFromRightClick(data, this);
+                    }
+                },
+                {
+                    title: 'Item #2',
+                },
+               ];
+
 
     Update(false);
     SetupLegend(d3, d3ContentDiv);
@@ -198,7 +406,27 @@ function PtN2Diagram(parentDiv, modelJSON) {
                 return "translate(" + xScalerPTree0(d.x0) + "," + yScalerPTree0(d.y0) + ")";
             })
             .on("click", function (d) { LeftClick(d, this); })
-            .on("contextmenu", function (d) { RightClick(d, this); })
+            .on("contextmenu", d3.contextMenu(menu, {
+				theme: function () {
+					return 'd3-context-menu-theme';
+				},
+				onOpen: function (data, index) {
+					console.log('Menu Opened!', 'element:', this, 'data:', data, 'index:', index);
+				},
+				onClose: function (data, index) {
+					console.log('Menu Closed!', 'element:', this, 'data:', data, 'index:', index);
+				},
+				position: function (data, index) {
+					var position = d3.mouse(document.body)
+					console.log('position!', position);
+					return {
+						    left: position[0],
+						    top: position[1]
+						}
+				}
+			}))
+
+
             .on("mouseover", function (d) {
                 if (abs2prom != undefined) {
                     if (d.type == "param" || d.type == "unconnected_param") {
@@ -503,6 +731,20 @@ function PtN2Diagram(parentDiv, modelJSON) {
 
     //right click => collapse
     function RightClick(d, ele) {
+        var position = d3.mouse(this);
+        d3.select('#context_menu_sys')
+          .style('position', 'absolute')
+          .style('left', position[0] + "px")
+          .style('top', position[1] + "px")
+          .style('display', 'block');
+
+        d3.contextMenu(menu, {
+        });
+
+        var e = d3.event;
+        e.preventDefault();
+    }
+    function CollapseFromRightClick(d, ele) {
         var e = d3.event;
         lastLeftClickedEle = d;
         lastRightClickedObj = d;

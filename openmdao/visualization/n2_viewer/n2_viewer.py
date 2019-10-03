@@ -380,9 +380,9 @@ def n2(data_source, outfile='n2.html', show_browser=True, embeddable=False,
     # grab the libraries, src and style
     lib_dct = {'d3': 'd3.v4.min', 'awesomplete': 'awesomplete', 'vk_beautify': 'vkBeautify'}
     libs = read_files(itervalues(lib_dct), libs_dir, 'js')
-    src_names = 'constants', 'draw', 'legend', 'modal', 'utils', 'ModelData', 'N2SVGLayout', 'N2Matrix', 'N2Arrow', 'ptN2', 'search', 'svg'
+    src_names = 'constants', 'draw', 'legend', 'modal', 'utils', 'ModelData', 'N2SVGLayout', 'N2Matrix', 'N2Arrow', 'd3-context-menu', 'ptN2', 'search', 'svg'
     srcs = read_files(src_names, src_dir, 'js')
-    styles = read_files(('awesomplete', 'partition_tree'), style_dir, 'css')
+    styles = read_files(('awesomplete', 'partition_tree', 'd3-context-menu'), style_dir, 'css')
 
     with open(os.path.join(style_dir, "fontello.woff"), "rb") as f:
         encoded_font = str(base64.b64encode(f.read()).decode("ascii"))

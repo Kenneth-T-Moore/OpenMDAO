@@ -81,8 +81,16 @@
 }
 
 
+/* Experimental: context menu style. */
+.context-menu {
+  display: none;
+  position: absolute;
+  z-index: 10;
+}
 
-
+.context-menu--active {
+  display: block;
+}
 
 body {
     font-family: helvetica, sans-serif;
@@ -186,7 +194,7 @@ body {
     /* Subset of fonts from Font Awesome v4.6.3 created using http://fontello.com/ */
     font-family: 'fontello';
     src: url('data:application/font-woff;charset=utf-8;base64,{{fontello}}') format('woff');
-}            
+}
 
 [class^="icon-"]:before, [class*=" icon-"]:before {
     display: inline-block;
@@ -270,5 +278,5 @@ body {
   font-size: 11px;
   padding: 5;
   background-color: #fff;
-  border: solid 1px #dfdfdf;   
+  border: solid 1px #dfdfdf;
 }
