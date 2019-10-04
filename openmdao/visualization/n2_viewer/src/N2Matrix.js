@@ -2,6 +2,9 @@
  * Use the model tree to build a matrix, display, and perform
  * operations with it.
  */
+
+
+
 class N2Matrix {
 
     constructor(nodes) {
@@ -312,6 +315,31 @@ class N2Matrix {
             DrawGroup
         ];
 
+
+        var contex_menu_io = [
+            {
+                title: function (d, index) {
+                    let rt = matrix.nodes[d.col];
+                    if (rt.isMinimized) return 'Expand';
+
+                    if (d.isMinimized) {
+                        return 'Show Only Connected Outputs';
+                    } else {
+                        return 'Show Only Connected Inputs';
+                    }
+                },
+                action: function (d, index) {
+                    let rt = matrix.nodes[d.col];
+                    if (rt.isMinimized) {
+                       collapseFromRightClick(d, this);
+                    }
+                }
+            },
+            {
+                title: 'Additional Menu Item',
+            },
+        ];
+
         for (var i = 0; i < classes.length; ++i) {
             var sel = n2ElementsGroup.selectAll("." + classes[i])
                 .data(datas[i], function (d) {
@@ -331,7 +359,27 @@ class N2Matrix {
             drawFunctions[i](gEnter, u0, v0, (i < 3) ? getOnDiagonalCellColor : CONNECTION_COLOR, false)
                 .on("mouseover", (i < 3) ? mouseOverOnDiagN2 : mouseOverOffDiagN2)
                 .on("mouseleave", mouseOutN2)
-                .on("click", mouseClickN2);
+                .on("click", mouseClickN2)
+            .on("contextmenu", d3.contextMenu(contex_menu_io, {
+                theme: function () {
+                       return 'd3-context-menu-theme';
+                },
+                onOpen: function (data, index) {
+                    console.log('Menu Opened!', 'element:', this, 'data:', data, 'index:', index);
+                },
+                onClose: function (data, index) {
+                    console.log('Menu Closed!', 'element:', this, 'data:', data, 'index:', index);
+                },
+                position: function (data, index) {
+                    var position = d3.mouse(document.body)
+                    console.log('position!', position);
+                    return {
+                        left: position[0],
+                        top: position[1]
+                    }
+                }
+            }));
+
 
 
             var gUpdate = gEnter.merge(sel).transition(sharedTransition)

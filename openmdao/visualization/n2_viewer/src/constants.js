@@ -99,3 +99,4 @@ var widthPSolverTreePx = 1,
     yScalerPSolverTree0 = null;
 
 var showLinearSolverNames = true;
+
