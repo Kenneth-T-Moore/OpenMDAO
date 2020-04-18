@@ -92,10 +92,11 @@ class Jacobian(object):
         of, wrt = abs_key
         if system.comm.size > 1:
             if wrt in system._outputs._views:
-                sz = abs2meta[wrt]['global_size']
+                wrt_sz = abs2meta[wrt]['global_size']
             else:
-                sz = abs2meta[wrt]['size']
-            return (abs2meta[of]['global_size'], sz)
+                wrt_sz = abs2meta[wrt]['size']
+            of_sz = abs2meta[of]['size']
+            return (of_sz, wrt_sz)
 
         return (abs2meta[of]['size'], abs2meta[wrt]['size'])
 
