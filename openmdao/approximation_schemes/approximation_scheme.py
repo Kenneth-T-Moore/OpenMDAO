@@ -289,8 +289,7 @@ class ApproximationScheme(object):
                                                       system._full_comm.size > 1)
         par_fd_w_serial_model = use_parallel_fd and system._num_par_fd == system._full_comm.size
         num_par_fd = system._num_par_fd if use_parallel_fd else 1
-        dist_comp = system.options['distributed']
-        is_parallel = use_parallel_fd or (system.comm.size > 1 and not dist_comp)
+        is_parallel = use_parallel_fd or system.comm.size > 1
 
         results = defaultdict(list)
         iproc = system.comm.rank
