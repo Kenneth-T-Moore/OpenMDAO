@@ -1047,6 +1047,7 @@ class System(object):
         if info['method'] is None and self._approx_schemes:
             info['method'] = list(self._approx_schemes)[0]
 
+        cache_partials = False
         if self._coloring_info['coloring'] is None:
             # check to see if any approx derivs have been declared
             for meta in self._subjacs_info.values():
@@ -1060,7 +1061,18 @@ class System(object):
                     self.declare_partials('*', '*', method=self._coloring_info['method'])
                 except AttributeError:  # this system must be a group
                     from openmdao.core.component import Component
+                    from openmdao.core.explicitcomponent import ExplicitComponent
+
                     for s in self.system_iter(recurse=True, typ=Component):
+                        from copy import copy
+                        cache_partials = True
+                        s._declared_partials_cache = copy(s._declared_partials)
+                        if isinstance(s, ExplicitComponent):
+                            s._has_compute_partials_cache = s._has_compute_partials
+                            s._has_compute_partials = False
+                        else:
+                            s._override_linearize = True
+
                         s.declare_partials('*', '*', method=self._coloring_info['method'])
                 self._setup_partials(recurse=True)
 
@@ -1198,6 +1210,16 @@ class System(object):
         self._residuals._data[:] = starting_resids
 
         self._first_call_to_linearize = save_first_call
+
+        # Restore subjacs in children.
+        if cache_partials:
+            for s in self.system_iter(recurse=True, typ=Component):
+                s._declared_partials = s._declared_partials_cache
+                if isinstance(s, ExplicitComponent):
+                    s._has_compute_partials = s._has_compute_partials_cache
+                else:
+                    s._override_linearize = False
+            self._setup_partials(recurse=True)
 
         return [coloring]
 

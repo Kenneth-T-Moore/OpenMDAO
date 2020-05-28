@@ -197,6 +197,9 @@ class BalanceComp(ImplicitComponent):
         jacobian : Jacobian
             sub-jac components written to jacobian[output_name, input_name]
         """
+        if self._override_linearize:
+            return
+
         if inputs._under_complex_step:
             self._dscale_drhs = self._dscale_drhs.astype(np.complex)
         else:

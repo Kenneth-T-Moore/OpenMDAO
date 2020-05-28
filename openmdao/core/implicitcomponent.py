@@ -31,6 +31,7 @@ class ImplicitComponent(Component):
         super(ImplicitComponent, self).__init__(**kwargs)
 
         self._inst_functs = {name: getattr(self, name, None) for name in _inst_functs}
+        self._override_linearize = False
 
     def _configure(self):
         """

@@ -19,7 +19,8 @@ class ExplicitComponent(Component):
     _inst_functs : dict
         Dictionary of names mapped to bound methods.
     _has_compute_partials : bool
-        If True, the instance overrides compute_partials.
+        If True, the instance overrides compute_partials.  This is also used to disable computation
+        when computing coloring of approximated systems.
     """
 
     def __init__(self, **kwargs):
