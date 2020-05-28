@@ -68,11 +68,11 @@ class N2Layout {
         if (this.zoomedElement.parent)
             this.zoomedNodes.push(this.zoomedElement.parent);
 
-        startTimer('N2Layout._computeSolverNormalizedPositions');
-        this._computeSolverNormalizedPositions(this.model.root, 0, false, null);
-        stopTimer('N2Layout._computeSolverNormalizedPositions');
-        if (this.zoomedElement.parent)
-            this.zoomedSolverNodes.push(this.zoomedElement.parent);
+        //startTimer('N2Layout._computeSolverNormalizedPositions');
+        //this._computeSolverNormalizedPositions(this.model.root, 0, false, null);
+        //stopTimer('N2Layout._computeSolverNormalizedPositions');
+        //if (this.zoomedElement.parent)
+            //this.zoomedSolverNodes.push(this.zoomedElement.parent);
 
         this.setTransitionPermission();
 
