@@ -16,13 +16,9 @@ Purdue University, West Lafayette, IN 47906
 July, 2016
 Implemented in OpenMDAO, Aug 2016, Kenneth T. Moore
 """
-
-from __future__ import print_function
-
 from collections import OrderedDict
 import os
 from time import time
-from six.moves import range
 
 import numpy as np
 from scipy.special import erf
@@ -148,7 +144,7 @@ class Branch_and_Bound(Driver):
         boolean
             Failure flag; True if failed to converge, False if successful.
         """
-        problem = self._problem
+        problem = self._problem()
         obj_surrogate = self.obj_surrogate
         atol = self.options['atol']
         disp = self.options['disp']

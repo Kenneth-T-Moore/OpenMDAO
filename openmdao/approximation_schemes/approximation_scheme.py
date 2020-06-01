@@ -1,12 +1,12 @@
 """Base class used to define the interface for derivative approximation schemes."""
-from __future__ import print_function, division
-
-from six import iteritems
 from collections import defaultdict
+
 from scipy.sparse import coo_matrix
 import numpy as np
+
 from openmdao.utils.array_utils import sub2full_indices, get_input_idx_split
-from openmdao.utils.coloring import Coloring
+import openmdao.utils.coloring as coloring_mod
+from openmdao.utils.mpi import MPI
 from openmdao.jacobians.jacobian import Jacobian
 
 _full_slice = slice(None)
@@ -41,12 +41,19 @@ class ApproximationScheme(object):
         Initialize the ApproximationScheme.
         """
         self._approx_groups = None
-        self._colored_approx_groups = []
+        self._colored_approx_groups = None
         self._j_colored = None
         self._j_data_sizes = None
         self._j_data_offsets = None
         self._approx_groups_cached_under_cs = False
         self._exec_dict = defaultdict(list)
+
+    def _reset(self):
+        """
+        Get rid of any existing approx groups.
+        """
+        self._colored_approx_groups = None
+        self._approx_groups = None
 
     def _get_approx_groups(self, system, under_cs=False):
         """
@@ -69,10 +76,11 @@ class ApproximationScheme(object):
             Each colored_approx_groups entry contains data for a group of columns.
         """
         if under_cs != self._approx_groups_cached_under_cs:
-            self._init_colored_approximations(system)
+            if coloring_mod._use_partial_sparsity:
+                self._init_colored_approximations(system)
             self._init_approximations(system)
         else:
-            if self._colored_approx_groups is None:
+            if self._colored_approx_groups is None and coloring_mod._use_partial_sparsity:
                 self._init_colored_approximations(system)
             if self._approx_groups is None:
                 self._init_approximations(system)
@@ -81,7 +89,7 @@ class ApproximationScheme(object):
 
         return self._approx_groups, self._colored_approx_groups
 
-    def add_approximation(self, abs_key, kwargs):
+    def add_approximation(self, abs_key, system, kwargs):
         """
         Use this approximation scheme to approximate the derivative d(of)/d(wrt).
 
@@ -89,6 +97,8 @@ class ApproximationScheme(object):
         ----------
         abs_key : tuple(str,str)
             Absolute name pairing of (of, wrt) for the derivative.
+        system : System
+            Containing System.
         kwargs : dict
             Additional keyword arguments, to be interpreted by sub-classes.
         """
@@ -121,7 +131,7 @@ class ApproximationScheme(object):
 
         # don't do anything if the coloring doesn't exist yet
         coloring = system._coloring_info['coloring']
-        if not isinstance(coloring, Coloring):
+        if not isinstance(coloring, coloring_mod.Coloring):
             return
 
         outputs = system._outputs
@@ -136,18 +146,18 @@ class ApproximationScheme(object):
 
         is_total = isinstance(system, Group)
 
-        system._update_wrt_matches()
+        system._update_wrt_matches(system._coloring_info)
         wrt_matches = system._coloring_info['wrt_matches']
 
         data = None
         keys = set()
-        for key, apprx in iteritems(self._exec_dict):
+        for key, apprx in self._exec_dict.items():
             if key[0] in wrt_matches:
+                if data is None:
+                    # data is the same for all colored approxs so we only need the first
+                    data = self._get_approx_data(system, key)
                 options = apprx[0][1]
                 if 'coloring' in options:
-                    if data is None:
-                        # data is the same for all colored approxs so we only need the first
-                        data = self._get_approx_data(system, key)
                     keys.update(a[0] for a in apprx)
 
         if is_total and system.pathname == '':  # top level approx totals
@@ -270,6 +280,7 @@ class ApproximationScheme(object):
             self._approx_groups.append((wrt, data, in_idx, tmpJ, [(arr, in_idx)], None))
 
     def _compute_approximations(self, system, jac, total, under_cs):
+        from openmdao.core.component import Component
         # Clean vector for results
         results_array = system._outputs._data.copy() if total else system._residuals._data.copy()
 
@@ -283,6 +294,10 @@ class ApproximationScheme(object):
         par_fd_w_serial_model = use_parallel_fd and system._num_par_fd == system._full_comm.size
         num_par_fd = system._num_par_fd if use_parallel_fd else 1
         is_parallel = use_parallel_fd or system.comm.size > 1
+        if isinstance(system, Component):
+            is_distributed = system.options['distributed']
+        else:
+            is_distributed = system._has_distrib_vars and not use_parallel_fd
 
         results = defaultdict(list)
         iproc = system.comm.rank
@@ -301,51 +316,58 @@ class ApproximationScheme(object):
         do_rows_cols = self._j_colored is None
 
         # do colored solves first
-        for data, col_idxs, tmpJ, idx_info, nz_rows in colored_approx_groups:
-            colored_shape = (tmpJ['@nrows'], tmpJ['@ncols'])
+        if colored_approx_groups is not None:
+            for data, col_idxs, tmpJ, idx_info, nz_rows in colored_approx_groups:
+                colored_shape = (tmpJ['@nrows'], tmpJ['@ncols'])
 
-            if fd_count % num_par_fd == system._par_fd_id:
-                # run the finite difference
-                result = self._run_point(system, idx_info, data, results_array, total)
-                if par_fd_w_serial_model or not is_parallel:
-                    rowmap = tmpJ['@row_idx_map'] if '@row_idx_map' in tmpJ else None
-                    if rowmap is not None:
-                        result = result[rowmap]
-                    result = self._transform_result(result)
+                if fd_count % num_par_fd == system._par_fd_id:
+                    # run the finite difference
+                    result = self._run_point(system, idx_info, data, results_array, total)
+                    if par_fd_w_serial_model or not is_parallel:
+                        rowmap = tmpJ['@row_idx_map'] if '@row_idx_map' in tmpJ else None
+                        if rowmap is not None:
+                            result = result[rowmap]
+                        result = self._transform_result(result)
 
-                    if nz_rows is None:  # uncolored column
-                        if do_rows_cols:
-                            nrows = tmpJ['@nrows']
-                            jrows.extend(range(nrows))
-                            jcols.extend(col_idxs * nrows)
-                        jdata.extend(result)
-                    else:
-                        for i, col in enumerate(col_idxs):
+                        if nz_rows is None:  # uncolored column
                             if do_rows_cols:
-                                jrows.extend(nz_rows[i])
-                                jcols.extend([col] * len(nz_rows[i]))
-                            jdata.extend(result[nz_rows[i]])
-                else:  # parallel model (some vars are remote)
-                    raise NotImplementedError("simul approx coloring with parallel FD/CS is "
-                                              "only supported currently when using "
-                                              "a serial model, i.e., when "
-                                              "num_par_fd == number of MPI procs.")
-            fd_count += 1
+                                nrows = tmpJ['@nrows']
+                                jrows.extend(range(nrows))
+                                jcols.extend(col_idxs * nrows)
+                            jdata.extend(result)
+                        else:
+                            for i, col in enumerate(col_idxs):
+                                if do_rows_cols:
+                                    jrows.extend(nz_rows[i])
+                                    jcols.extend([col] * len(nz_rows[i]))
+                                jdata.extend(result[nz_rows[i]])
+                    else:  # parallel model (some vars are remote)
+                        raise NotImplementedError("simul approx coloring with parallel FD/CS is "
+                                                  "only supported currently when using "
+                                                  "a serial model, i.e., when "
+                                                  "num_par_fd == number of MPI procs.")
+                fd_count += 1
 
         # now do uncolored solves
         for wrt, data, col_idxs, tmpJ, idx_info, nz_rows in approx_groups:
             J = tmpJ[wrt]
             full_idxs = J['loc_outvec_idxs']
             out_slices = tmpJ['@out_slices']
+
+            if J['vector'] is not None:
+                app_data = self.apply_directional(data, J['vector'])
+            else:
+                app_data = data
+
             for i_count, idxs in enumerate(col_idxs):
                 if fd_count % num_par_fd == system._par_fd_id:
                     # run the finite difference
                     result = self._run_point(system, ((idx_info[0][0], idxs),),
-                                             data, results_array, total)
+                                             app_data, results_array, total)
 
                     if is_parallel:
-                        for of, (oview, out_idxs, _, _) in iteritems(J['ofs']):
-                            if owns[of] == iproc:
+                        for of, (oview, out_idxs, _, _) in J['ofs'].items():
+                            if owns[of] == iproc or is_distributed:
                                 results[(of, wrt)].append(
                                     (i_count,
                                         self._transform_result(
@@ -386,24 +408,26 @@ class ApproximationScheme(object):
             # convert COO matrix to dense for easier slicing
             Jcolored = self._j_colored.toarray()
 
-        elif is_parallel:  # uncolored with parallel systems
+        elif is_parallel and not is_distributed:  # uncolored with parallel systems
             results = _gather_jac_results(mycomm, results)
 
-        for _, _, tmpJ, _, _ in colored_approx_groups:
-            # TODO: coloring when using parallel FD and/or FD with remote comps
-            for key in tmpJ['@approxs']:
-                slc = tmpJ['@jac_slices'][key]
-                if uses_voi_indices:
-                    jac._override_checks = True
-                    jac[key] = _from_dense(jacobian, key, Jcolored[slc])
-                    jac._override_checks = False
-                else:
-                    jac[key] = _from_dense(jacobian, key, Jcolored[slc])
+        if colored_approx_groups is not None:
+            for _, _, tmpJ, _, _ in colored_approx_groups:
+                # TODO: coloring when using parallel FD and/or FD with remote comps
+                for key in tmpJ['@approxs']:
+                    slc = tmpJ['@jac_slices'][key]
+                    if uses_voi_indices:
+                        jac._override_checks = True
+                        jac[key] = _from_dense(jacobian, key, Jcolored[slc])
+                        jac._override_checks = False
+                    else:
+                        jac[key] = _from_dense(jacobian, key, Jcolored[slc])
 
         Jcolored = None  # clean up memory
 
         for wrt, _, _, tmpJ, _, _ in approx_groups:
-            ofs = tmpJ[wrt]['ofs']
+            J = tmpJ[wrt]
+            ofs = J['ofs']
             for of in ofs:
                 key = (of, wrt)
                 oview, _, rows_reduced, cols_reduced = ofs[of]
@@ -411,7 +435,7 @@ class ApproximationScheme(object):
                     for i, result in results[key]:
                         oview[:, i] = result
 
-                if mult != 1.0:
+                if J['vector'] is not None or mult != 1.0:
                     oview *= mult
 
                 if uses_voi_indices:
@@ -490,7 +514,6 @@ def _get_wrt_subjacs(system, approxs):
     ofdict = {}
     nondense = {}
     slicedict = system._outputs.get_slice_dict()
-    out_views = system._outputs._views
     abs_out_names = [n for n in system._var_allprocs_abs_names['output'] if n in slicedict]
 
     for key, options in approxs:
@@ -498,9 +521,9 @@ def _get_wrt_subjacs(system, approxs):
         if 'rows' in options and options['rows'] is not None:
             nondense[key] = options
         if wrt not in J:
-            J[wrt] = {'ofs': set(), 'tot_rows': 0, 'directional': options['directional']}
+            J[wrt] = {'ofs': set(), 'tot_rows': 0, 'directional': options['directional'],
+                      'vector': options['vector']}
 
-        tmpJ = None
         if of not in ofdict and (approx_of is None or (approx_of and of in approx_of)):
             J[wrt]['ofs'].add(of)
             if of in approx_of_idx:
@@ -563,7 +586,12 @@ def _get_wrt_subjacs(system, approxs):
                         full_idxs.append(np.arange(slc.start, slc.stop)[approx_of_idx[sof]])
                     else:
                         full_idxs.append(range(slc.start, slc.stop))
-            J[wrt]['loc_outvec_idxs'] = np.hstack(full_idxs)
+            if full_idxs:
+                J[wrt]['loc_outvec_idxs'] = np.hstack(full_idxs)
+            else:
+                # guard for empty
+                # which can happen if no vois are on this processor (e.g. pargroup)
+                J[wrt]['loc_outvec_idxs'] = np.array([])
         else:
             J[wrt]['loc_outvec_idxs'] = _full_slice
 

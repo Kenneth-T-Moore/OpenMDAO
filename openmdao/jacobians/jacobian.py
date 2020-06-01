@@ -1,11 +1,11 @@
 """Define the base Jacobian class."""
-from __future__ import division
+import weakref
+
 import numpy as np
 from numpy.random import rand
 
 from collections import OrderedDict, defaultdict
 from scipy.sparse import issparse
-from six import itervalues, iteritems
 
 from openmdao.utils.name_maps import key2abs_key, rel_name2abs_name
 from openmdao.matrices.matrix import sparse_types
@@ -57,7 +57,7 @@ class Jacobian(object):
         system : System
             Parent system to this jacobian.
         """
-        self._system = system
+        self._system = weakref.ref(system)
         self._subjacs_info = system._subjacs_info
         self._override_checks = False
         self._under_complex_step = False
@@ -68,7 +68,7 @@ class Jacobian(object):
     def _get_abs_key(self, key):
         abskey = self._abs_keys[key]
         if not abskey:
-            self._abs_keys[key] = abskey = key2abs_key(self._system, key)
+            self._abs_keys[key] = abskey = key2abs_key(self._system(), key)
         return abskey
 
     def _abs_key2shape(self, abs_key):
@@ -87,8 +87,10 @@ class Jacobian(object):
         in_size : int
             local size of the input variable.
         """
-        abs2meta = self._system._var_allprocs_abs2meta
-        return (abs2meta[abs_key[0]]['size'], abs2meta[abs_key[1]]['size'])
+        system = self._system()
+        abs2meta = system._var_allprocs_abs2meta
+        of, wrt = abs_key
+        return (abs2meta[of]['size'], abs2meta[wrt]['size'])
 
     def __contains__(self, key):
         """
@@ -124,8 +126,8 @@ class Jacobian(object):
         if abs_key in self._subjacs_info:
             return self._subjacs_info[abs_key]['value']
         else:
-            msg = 'Variable name pair ("{}", "{}") not found.'
-            raise KeyError(msg.format(key[0], key[1]))
+            msg = '{}: Variable name pair ("{}", "{}") not found.'
+            raise KeyError(msg.format(self.msginfo, key[0], key[1]))
 
     def __setitem__(self, key, subjac):
         """
@@ -143,8 +145,8 @@ class Jacobian(object):
 
             # You can only set declared subjacobians.
             if abs_key not in self._subjacs_info:
-                msg = 'Variable name pair ("{}", "{}") must first be declared.'
-                raise KeyError(msg.format(key[0], key[1]))
+                msg = '{}: Variable name pair ("{}", "{}") must first be declared.'
+                raise KeyError(msg.format(self.msginfo, key[0], key[1]))
 
             subjacs_info = self._subjacs_info[abs_key]
 
@@ -173,15 +175,43 @@ class Jacobian(object):
                 else:
                     # Sparse subjac
                     if subjac.shape != (1,) and subjac.shape != rows.shape:
-                        raise ValueError("Sub-jacobian for key %s has "
-                                         "the wrong shape (%s), expected (%s)." %
-                                         (abs_key, subjac.shape, rows.shape))
+                        msg = '{}: Sub-jacobian for key {} has the wrong shape ({}), expected ({}).'
+                        raise ValueError(msg.format(self.msginfo, abs_key,
+                                                    subjac.shape, rows.shape))
 
                 subjacs_info['value'][:] = subjac
 
         else:
-            msg = 'Variable name pair ("{}", "{}") not found.'
-            raise KeyError(msg.format(key[0], key[1]))
+            msg = '{}: Variable name pair ("{}", "{}") not found.'
+            raise KeyError(msg.format(self.msginfo, key[0], key[1]))
+
+    def __iter__(self):
+        """
+        Yield next name pair of sub-Jacobian.
+        """
+        for key in self._subjacs_info.keys():
+            yield key
+
+    def items(self):
+        """
+        Yield name pair and value of sub-Jacobian.
+        """
+        for key, val in self._subjacs_info.items():
+            yield key, val['value']
+
+    @property
+    def msginfo(self):
+        """
+        Return info to prepend to messages.
+
+        Returns
+        -------
+        str
+            Info to prepend to messages.
+        """
+        if self._system() is None:
+            return type(self).__name__
+        return '{} in {}'.format(type(self).__name__, self._system().msginfo)
 
     def _update(self, system):
         """
@@ -246,38 +276,13 @@ class Jacobian(object):
             assert subjac_info['rows'] is None
             rows, cols, shape = subjac_info['sparsity']
             r = np.zeros(shape)
-            r[rows, cols] = rand(len(rows)) + 1.0
+            val = rand(len(rows))
+            val += 1.0
+            r[rows, cols] = val
         else:
             r = rand(*subjac.shape)
             r += 1.0
         return r
-
-    def _get_ranges(self, system, vtype):
-        """
-        Return an ordered dict of ranges for each var of a particular type (input or output).
-
-        Parameters
-        ----------
-        system : System
-            System owning this jacobian.
-        vtype : str
-            Type of variable, must be one of ('input', 'output').
-
-        Returns
-        -------
-        OrderedDict
-            Tuples of the form (start, end) keyed on variable name.
-        """
-        iproc = system.comm.rank
-        abs2idx = system._var_allprocs_abs2idx['linear']
-        sizes = system._var_sizes['linear'][vtype]
-        start = end = 0
-        ranges = OrderedDict()
-        for name in system._var_allprocs_abs_names[vtype]:
-            end += sizes[iproc, abs2idx[name]]
-            ranges[name] = (start, end)
-            start = end
-        return ranges
 
     def _save_sparsity(self, system):
         """
@@ -343,19 +348,19 @@ class Jacobian(object):
                         cols = meta['cols'] + coffset
                         J[rows, cols] = summ[key]
                     elif issparse(summ[key]):
-                        raise NotImplementedError("don't support scipy sparse arrays yet")
+                        raise NotImplementedError("{}: scipy sparse arrays are not "
+                                                  "supported yet.".format(self.msginfo))
                     else:
                         J[roffset:rend, coffset:cend] = summ[key]
 
-        # normalize by number of saved jacs, giving a sort of 'average' jac
-        J /= num_full_jacs
+        J *= (1.0 / num_full_jacs)
 
-        good_tol, _, _, _ = _tol_sweep(J, tol, orders)
+        tol_info = _tol_sweep(J, tol, orders)
 
         boolJ = np.zeros(J.shape, dtype=bool)
-        boolJ[J > good_tol] = True
+        boolJ[J > tol_info['good_tol']] = True
 
-        return boolJ
+        return boolJ, tol_info
 
     def set_complex_step_mode(self, active):
         """
@@ -369,7 +374,7 @@ class Jacobian(object):
         active : bool
             Complex mode flag; set to True prior to commencing complex step.
         """
-        for meta in itervalues(self._subjacs_info):
+        for meta in self._subjacs_info.values():
             if active:
                 meta['value'] = meta['value'].astype(np.complex)
             else:

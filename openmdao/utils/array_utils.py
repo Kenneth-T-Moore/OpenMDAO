@@ -1,11 +1,7 @@
 """
 Utils for dealing with arrays.
 """
-from __future__ import print_function, division
-
 import sys
-import six
-from six.moves import range
 from itertools import product
 from copy import copy
 
@@ -71,12 +67,12 @@ def take_nth(rank, size, seq):
         for proc in range(size):
             if rank == proc:
                 try:
-                    yield six.next(it)
+                    yield next(it)
                 except StopIteration:
                     return
             else:
                 try:
-                    six.next(it)
+                    next(it)
                 except StopIteration:
                     return
 
@@ -383,6 +379,80 @@ def _flatten_src_indices(src_indices, shape_in, shape_out, size_out):
         return convert_neg(src_indices.flatten(), size_out)
 
     entries = [list(range(x)) for x in shape_in]
-    cols = np.vstack(src_indices[i] for i in product(*entries))
+    cols = np.vstack([src_indices[i] for i in product(*entries)])
     dimidxs = [convert_neg(cols[:, i], shape_out[i]) for i in range(cols.shape[1])]
     return np.ravel_multi_index(dimidxs, shape_out)
+
+
+def sizes2offsets(size_array):
+    """
+    For a given array of sizes, return an array of offsets.
+
+    Offsets will be computed using a flattened version of size_array and then
+    reshaped to match the shape of size_array.
+
+    Parameters
+    ----------
+    size_array : ndarray
+        Array of sizes.
+
+    Returns
+    -------
+    ndarray
+        Array of offsets.
+    """
+    offsets = np.zeros(size_array.size, dtype=size_array.dtype)
+    offsets[1:] = np.cumsum(size_array.flat)[:-1]
+    return offsets.reshape(size_array.shape)
+
+
+def abs_complex(x):
+    """
+    Compute the absolute value of a complex-stepped vector.
+
+    Rather than taking a Euclidian norm, simply negate the values that are less than zero.
+
+    Parameters
+    ----------
+    x : ndarray
+        Input array.
+
+    Returns
+    -------
+    ndarray
+        Complex-step absolute value of the array.
+    """
+    idx_neg = np.where(x < 0)
+    x[idx_neg] = -x[idx_neg]
+    return x
+
+
+def dv_abs_complex(x, x_deriv):
+    """
+    Compute the complex-step derivative of the absolute value function and its derivative.
+
+    Parameters
+    ----------
+    x : ndarray
+        Input array, used for determining which elements to negate.
+    x_deriv : ndarray
+        Incominng partial derivative array, may have one additional dimension.
+
+    Returns
+    -------
+    ndarray
+        Absolute value applied to x.
+    ndarray
+        Absolute value applied to x_deriv.
+    """
+    idx_neg = np.where(x < 0)
+
+    # Special case when x is (1, ) and x_deriv is (1, n).
+    if len(x_deriv.shape) == 1:
+        if idx_neg[0].size != 0:
+            return -x, -x_deriv
+
+    x[idx_neg] = -x[idx_neg]
+    x_deriv[idx_neg] = -x_deriv[idx_neg]
+
+    return x, x_deriv

@@ -11,13 +11,8 @@ Purdue University, West Lafayette, IN
 July 2016
 Implemented in OpenMDAO, Aug 2016, Kenneth T. Moore
 """
-from __future__ import print_function
-
 from collections import OrderedDict
 from time import time
-
-from six import iteritems
-from six.moves import range
 
 import numpy as np
 
@@ -176,7 +171,7 @@ class AMIEGO_driver(Driver):
         prom2abs = problem.model._var_allprocs_prom2abs_list['output']
         sampling_abs_names = {}
         i_dvs = []
-        for name, data in iteritems(self.sampling):
+        for name, data in self.sampling.items():
             abs_name = prom2abs[name][0]
             sampling_abs_names[abs_name] = data
             i_dvs.append(abs_name)
@@ -187,14 +182,14 @@ class AMIEGO_driver(Driver):
         # to absolute names and keep them.
         obj_sampling_abs_names = {}
         if self.obj_sampling is not None:
-            for name, data in iteritems(self.obj_sampling):
+            for name, data in self.obj_sampling.items():
                 abs_name = prom2abs[name][0]
                 obj_sampling_abs_names[abs_name] = data
             self.obj_sampling = obj_sampling_abs_names
 
         con_sampling_abs_names = {}
         if self.con_sampling is not None:
-            for name, data in iteritems(self.con_sampling):
+            for name, data in self.con_sampling.items():
                 abs_name = prom2abs[name][0]
                 con_sampling_abs_names[abs_name] = data
             self.con_sampling = con_sampling_abs_names
@@ -206,7 +201,7 @@ class AMIEGO_driver(Driver):
         else:
             self.int_con = [prom2abs[name][0] for name in self.int_con]
 
-        for name, val in iteritems(self.get_design_var_values()):
+        for name, val in self.get_design_var_values().items():
             if name in i_dvs:
                 if name in self._designvars_discrete:
                     if np.isscalar(val):
@@ -220,7 +215,7 @@ class AMIEGO_driver(Driver):
                 self.c_dvs.append(name)
 
         j = 0
-        for var, idx in iteritems(self.i_idx_cache):
+        for var, idx in self.i_idx_cache.items():
             idx_tuple = (j, j + idx)
             j += idx
             self.i_idx_cache[var] = idx_tuple
@@ -230,7 +225,7 @@ class AMIEGO_driver(Driver):
         self.xI_lb = np.empty((self.i_size, ))
         self.xI_ub = np.empty((self.i_size, ))
         dv_dict = self._designvars
-        for var, idx in iteritems(self.i_idx_cache):
+        for var, idx in self.i_idx_cache.items():
             i, j = idx
             self.xI_lb[i:j] = dv_dict[var]['lower']
             self.xI_ub[i:j] = dv_dict[var]['upper']
@@ -249,7 +244,7 @@ class AMIEGO_driver(Driver):
         minlp.i_idx_cache = self.i_idx_cache
 
         # Continuous optimizer sees all constraints.
-        for name, con in iteritems(self._cons):
+        for name, con in self._cons.items():
             cont_opt._cons[name] = con
 
         # Finish setting up the subdrivers.
@@ -294,7 +289,7 @@ class AMIEGO_driver(Driver):
         boolean
             Failure flag; True if failed to converge, False is successful.
         """
-        problem = self._problem
+        problem = self._problem()
         n_i = self.i_size
         ei_tol_rel = self.options['ei_tol_rel']
         disp = self.options['disp']
@@ -334,7 +329,7 @@ class AMIEGO_driver(Driver):
             for i_train in range(n_train):
 
                 xx_i = np.empty((self.i_size, ))
-                for var, idx in iteritems(self.i_idx_cache):
+                for var, idx in self.i_idx_cache.items():
                     i, j = idx
                     xx_i[i:j] = self.sampling[var][i_train]
 
@@ -375,7 +370,7 @@ class AMIEGO_driver(Driver):
             for i_train in range(n_train):
 
                 xx_i = np.empty((self.i_size, ))
-                for name, idx in iteritems(self.i_idx_cache):
+                for name, idx in self.i_idx_cache.items():
                     i, j = idx
                     xx_i[i:j] = self.sampling[name][i_train]
 
@@ -385,7 +380,7 @@ class AMIEGO_driver(Driver):
         # optimization back at the original initial condition.
         xc_cache = {}
         desvars = cont_opt.get_design_var_values()
-        for var, val in iteritems(desvars):
+        for var, val in desvars.items():
             xc_cache[var] = val.copy()
 
         ei_max = 1.0
@@ -419,12 +414,12 @@ class AMIEGO_driver(Driver):
                           x_i[i_run])
 
                 # Set Integer design variables
-                for var, idx in iteritems(self.i_idx_cache):
+                for var, idx in self.i_idx_cache.items():
                     i, j = idx
                     self.set_design_var(var, x_i[i_run][i:j])
 
                 # Restore initial condition for all continuous vars.
-                for var, val in iteritems(xc_cache):
+                for var, val in xc_cache.items():
                     cont_opt.set_design_var(var, val)
 
                 # If we are doing any prescreening, we need to attach the
@@ -448,7 +443,7 @@ class AMIEGO_driver(Driver):
                 obj_name = list(current_objs.keys())[0]
                 current_obj = current_objs[obj_name].copy()
                 obj.append(current_obj)
-                for name, value in iteritems(self.get_constraint_values()):
+                for name, value in self.get_constraint_values().items():
 
                     # We only penalize with constraints that are functions of the integer vars,
                     # so only need to keep track of those.
@@ -506,7 +501,7 @@ class AMIEGO_driver(Driver):
             X = (x_i - X_mean) / X_std
             Y = (obj_surr - Y_mean) / Y_std
 
-            for name, val in iteritems(cons):
+            for name, val in cons.items():
 
                 val = np.array(val)
 
@@ -648,9 +643,9 @@ class AMIEGO_driver(Driver):
 
         # Pull optimal parameters back into framework and re-run, so that
         # framework is left in the right final state
-        for name, val in iteritems(best_int_design):
+        for name, val in best_int_design.items():
             self.set_design_var(name, val)
-        for name, val in iteritems(best_cont_design):
+        for name, val in best_cont_design.items():
             self.set_design_var(name, val)
 
         with Recording('AMIEGO_cont_opt', i_con_opt, self) as rec:

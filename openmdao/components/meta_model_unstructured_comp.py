@@ -1,6 +1,4 @@
 """MetaModel provides basic meta modeling capability."""
-from six import iteritems
-from six.moves import range
 from copy import deepcopy
 from itertools import chain, product
 
@@ -9,7 +7,7 @@ import numpy as np
 from openmdao.core.explicitcomponent import ExplicitComponent
 from openmdao.surrogate_models.surrogate_model import SurrogateModel
 from openmdao.utils.class_util import overrides_method
-from openmdao.utils.general_utils import warn_deprecation, simple_warning
+from openmdao.utils.general_utils import simple_warning
 from openmdao.utils.name_maps import rel_key2abs_key
 
 
@@ -118,8 +116,8 @@ class MetaModelUnStructuredComp(ExplicitComponent):
 
         if vec_size > 1:
             if metadata['shape'][0] != vec_size:
-                raise RuntimeError("Metamodel: First dimension of input '%s' must be %d"
-                                   % (name, vec_size))
+                raise RuntimeError("%s: First dimension of input '%s' must be %d"
+                                   % (self.msginfo, name, vec_size))
             input_size = metadata['value'][0].size
         else:
             input_size = metadata['value'].size
@@ -167,8 +165,8 @@ class MetaModelUnStructuredComp(ExplicitComponent):
 
         if vec_size > 1:
             if metadata['shape'][0] != vec_size:
-                raise RuntimeError("Metamodel: First dimension of output '%s' must be %d"
-                                   % (name, vec_size))
+                raise RuntimeError("%s: First dimension of output '%s' must be %d"
+                                   % (self.msginfo, name, vec_size))
             output_shape = metadata['shape'][1:]
             if len(output_shape) == 0:
                 output_shape = 1
@@ -209,15 +207,18 @@ class MetaModelUnStructuredComp(ExplicitComponent):
         recurse : bool
             Whether to call this method in subsystems.
         """
-        # Create an instance of the default surrogate for outputs that did not have a surrogate
-        # specified.
         default_surrogate = self.options['default_surrogate']
-        if default_surrogate is not None:
-            for name, shape in self._surrogate_output_names:
-                metadata = self._metadata(name)
-                if metadata.get('default_surrogate'):
-                    surrogate = deepcopy(default_surrogate)
-                    metadata['surrogate'] = surrogate
+        for name, shape in self._surrogate_output_names:
+            metadata = self._metadata(name)
+            if default_surrogate is not None and metadata.get('default_surrogate'):
+
+                # Create an instance of the default surrogate for outputs that did not have a
+                # surrogate specified.
+                surrogate = deepcopy(default_surrogate)
+                metadata['surrogate'] = surrogate
+
+            if 'surrogate' in metadata:
+                metadata['surrogate']._setup_var_data(self.pathname)
 
         # training will occur on first execution after setup
         self.train = True
@@ -267,42 +268,38 @@ class MetaModelUnStructuredComp(ExplicitComponent):
                                    wrt=tuple([name[0] for name in self._surrogate_input_names]),
                                    dct=dct)
 
-            # warn the user that if they don't explicitly set options for fd,
-            #   the defaults will be used
-            # get a list of approximated partials
-            declared_partials = set([
-                key for key, dct in iteritems(self._subjacs_info) if 'method' in dct
-                and dct['method']])
+        # Support for user declaring fd partials in a child class and assigning new defaults.
+        # We want a warning for all partials that were not explicitly declared.
+        declared_partials = set([
+            key for key, dct in self._subjacs_info.items() if 'method' in dct
+            and dct['method']])
 
-            non_declared_partials = []
-            for of, n_of in self._surrogate_output_names:
-                has_derivs = False
-                surrogate = self._metadata(of).get('surrogate')
-                if surrogate:
-                    has_derivs = overrides_method('linearize', surrogate, SurrogateModel)
-                if not has_derivs:
-                    for wrt, n_wrt in self._surrogate_input_names:
-                        abs_key = rel_key2abs_key(self, (of, wrt))
-                        if abs_key not in declared_partials:
-                            non_declared_partials.append(abs_key)
-            if non_declared_partials:
-                msg = "Because the MetaModelUnStructuredComp '{}' uses a surrogate " \
-                      "which does not define a linearize method,\nOpenMDAO will use " \
-                      "finite differences to compute derivatives. Some of the derivatives " \
-                      "will be computed\nusing default finite difference " \
-                      "options because they were not explicitly declared.\n".format(self.name)
-                msg += "The derivatives computed using the defaults are:\n"
-                for abs_key in non_declared_partials:
-                    msg += "    {}, {}\n".format(*abs_key)
-                simple_warning(msg, RuntimeWarning)
+        # Gather undeclared fd partials on surrogates that don't support analytic derivatives.
+        # While we do this, declare the missing ones.
+        non_declared_partials = []
+        for of, _ in self._surrogate_output_names:
+            surrogate = self._metadata(of).get('surrogate')
+            if surrogate and not overrides_method('linearize', surrogate, SurrogateModel):
+                wrt_list = [name[0] for name in self._surrogate_input_names]
+                self._approx_partials(of=of, wrt=wrt_list, method='fd')
 
-            for out_name, out_shape in self._surrogate_output_names:
-                surrogate = self._metadata(out_name).get('surrogate')
-                if surrogate and not overrides_method('linearize', surrogate, SurrogateModel):
-                    self._approx_partials(of=out_name,
-                                          wrt=[name[0] for name in self._surrogate_input_names],
-                                          method='fd')
-                    self._get_approx_scheme('fd')
+                for wrt in wrt_list:
+                    abs_key = rel_key2abs_key(self, (of, wrt))
+                    if abs_key not in declared_partials:
+                        non_declared_partials.append(abs_key)
+
+        if non_declared_partials:
+            self._get_approx_scheme('fd')
+
+            msg = "Because the MetaModelUnStructuredComp '{}' uses a surrogate " \
+                  "which does not define a linearize method,\nOpenMDAO will use " \
+                  "finite differences to compute derivatives. Some of the derivatives " \
+                  "will be computed\nusing default finite difference " \
+                  "options because they were not explicitly declared.\n".format(self.name)
+            msg += "The derivatives computed using the defaults are:\n"
+            for abs_key in non_declared_partials:
+                msg += "    {}, {}\n".format(*abs_key)
+            simple_warning(msg, RuntimeWarning)
 
     def check_config(self, logger):
         """
@@ -559,15 +556,15 @@ class MetaModelUnStructuredComp(ExplicitComponent):
             if num_sample is None:
                 num_sample = len(val)
             elif len(val) != num_sample:
-                msg = "MetaModelUnStructuredComp: Each variable must have the same number"\
-                      " of training points. Expected {0} but found {1} "\
-                      "points for '{2}'."\
-                      .format(num_sample, len(val), name)
+                msg = "{}: Each variable must have the same number"\
+                      " of training points. Expected {} but found {} "\
+                      "points for '{}'."\
+                      .format(self.msginfo, num_sample, len(val), name)
                 raise RuntimeError(msg)
 
         if len(missing_training_data) > 0:
-            msg = "MetaModelUnStructuredComp: The following training data sets must be " \
-                  "provided as options for %s: " % self.pathname + \
+            msg = "%s: The following training data sets must be " \
+                  "provided as options: " % self.msginfo + \
                   str(missing_training_data)
             raise RuntimeError(msg)
 
@@ -604,8 +601,8 @@ class MetaModelUnStructuredComp(ExplicitComponent):
 
             surrogate = self._metadata(name).get('surrogate')
             if surrogate is None:
-                raise RuntimeError("Metamodel '%s': No surrogate specified for output '%s'"
-                                   % (self.pathname, name))
+                raise RuntimeError("%s: No surrogate specified for output '%s'"
+                                   % (self.msginfo, name))
             else:
                 surrogate.train(self._training_input,
                                 self._training_output[name])
@@ -614,62 +611,3 @@ class MetaModelUnStructuredComp(ExplicitComponent):
 
     def _metadata(self, name):
         return self._var_rel2meta[name]
-
-    @property
-    def default_surrogate(self):
-        """
-        Get the default surrogate for this MetaModel.
-        """
-        warn_deprecation("The 'default_surrogate' attribute provides backwards compatibility "
-                         "with earlier version of OpenMDAO; use options['default_surrogate'] "
-                         "instead.")
-        return self.options['default_surrogate']
-
-    @default_surrogate.setter
-    def default_surrogate(self, value):
-        warn_deprecation("The 'default_surrogate' attribute provides backwards compatibility "
-                         "with earlier version of OpenMDAO; use options['default_surrogate'] "
-                         "instead.")
-        self.options['default_surrogate'] = value
-
-
-class MetaModel(MetaModelUnStructuredComp):
-    """
-    Deprecated.
-    """
-
-    def __init__(self, *args, **kwargs):
-        """
-        Capture Initialize to throw warning.
-
-        Parameters
-        ----------
-        *args : list
-            Deprecated arguments.
-        **kwargs : dict
-            Deprecated arguments.
-        """
-        warn_deprecation("'MetaModel' has been deprecated. Use "
-                         "'MetaModelUnStructuredComp' instead.")
-        super(MetaModel, self).__init__(*args, **kwargs)
-
-
-class MetaModelUnStructured(MetaModelUnStructuredComp):
-    """
-    Deprecated.
-    """
-
-    def __init__(self, *args, **kwargs):
-        """
-        Capture Initialize to throw warning.
-
-        Parameters
-        ----------
-        *args : list
-            Deprecated arguments.
-        **kwargs : dict
-            Deprecated arguments.
-        """
-        warn_deprecation("'MetaModelUnStructured' has been deprecated. Use "
-                         "'MetaModelUnStructuredComp' instead.")
-        super(MetaModelUnStructured, self).__init__(*args, **kwargs)

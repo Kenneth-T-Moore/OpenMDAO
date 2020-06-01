@@ -1,9 +1,5 @@
 """Finite difference derivative approximations."""
-from __future__ import division, print_function
-
 from collections import namedtuple, defaultdict
-from six import iteritems
-from six.moves import range, zip
 
 import numpy as np
 
@@ -35,7 +31,7 @@ FD_COEFFS = {
 _full_slice = slice(None)
 
 
-def _generate_fd_coeff(form, order):
+def _generate_fd_coeff(form, order, system):
     """
     Create an FDForm namedtuple containing the deltas, coefficients, and current coefficient.
 
@@ -45,6 +41,8 @@ def _generate_fd_coeff(form, order):
         Requested form of FD (e.g. 'forward', 'central', 'backward').
     order : int
         The order of accuracy of the requested FD scheme.
+    system : System
+        Containing system.
 
     Returns
     -------
@@ -56,8 +54,8 @@ def _generate_fd_coeff(form, order):
         fd_form = FD_COEFFS[form, order]
     except KeyError:
         # TODO: Automatically generate requested form and store in dict.
-        msg = 'Finite Difference form="{}" and order={} are not supported'
-        raise ValueError(msg.format(form, order))
+        raise ValueError('{}: Finite Difference form="{}" and order={} are not '
+                         'supported'.format(system.msginfo, form, order))
     return fd_form
 
 
@@ -97,7 +95,7 @@ class FiniteDifference(ApproximationScheme):
         super(FiniteDifference, self).__init__()
         self._starting_ins = self._starting_outs = self._results_tmp = None
 
-    def add_approximation(self, abs_key, kwargs):
+    def add_approximation(self, abs_key, system, kwargs, vector=None):
         """
         Use this approximation scheme to approximate the derivative d(of)/d(wrt).
 
@@ -105,8 +103,12 @@ class FiniteDifference(ApproximationScheme):
         ----------
         abs_key : tuple(str,str)
             Absolute name pairing of (of, wrt) for the derivative.
+        system : System
+            Containing System.
         kwargs : dict
             Additional keyword arguments, to be interpreted by sub-classes.
+        vector : ndarray or None
+            Direction for difference when using directional derivatives.
         """
         options = self.DEFAULT_OPTIONS.copy()
         options.update(kwargs)
@@ -116,13 +118,16 @@ class FiniteDifference(ApproximationScheme):
             if form in DEFAULT_ORDER:
                 options['order'] = DEFAULT_ORDER[options['form']]
             else:
-                msg = "'{}' is not a valid form of finite difference; must be one of {}"
-                raise ValueError(msg.format(form, list(DEFAULT_ORDER.keys())))
+                raise ValueError("{}: '{}' is not a valid form of finite difference; must be "
+                                 "one of {}".format(system.msginfo, form,
+                                                    list(DEFAULT_ORDER.keys())))
 
-        key = (abs_key[1], options['form'], options['order'],
-               options['step'], options['step_calc'], options['directional'])
+        options['vector'] = vector
+
+        key = (abs_key[1], options['form'], options['order'], options['step'],
+               options['step_calc'], options['directional'])
         self._exec_dict[key].append((abs_key, options))
-        self._approx_groups = None  # force later regen of approx_groups
+        self._reset()  # force later regen of approx_groups
 
     def _get_approx_data(self, system, data):
         """
@@ -150,7 +155,7 @@ class FiniteDifference(ApproximationScheme):
         # A central second order accurate approximation for the first derivative would be stored
         # as deltas = [-2, -1, 1, 2] * h, coeffs = [1/12, -2/3, 2/3 , -1/12] * 1/h,
         # current_coeff = 0.
-        fd_form = _generate_fd_coeff(form, order)
+        fd_form = _generate_fd_coeff(form, order, system)
 
         if step_calc == 'rel':
             if wrt in system._outputs._views_flat:
@@ -239,8 +244,8 @@ class FiniteDifference(ApproximationScheme):
         ----------
         system : System
             The system having its derivs approximated.
-        idx_info : tuple of (ndarray of int, ndarray of float)
-            Tuple of wrt indices and corresponding data array to perturb.
+        idx_info : tuple of (Vector, ndarray of int)
+            Tuple of wrt indices and corresponding data vector to perturb.
         data : tuple of float
             Tuple of the form (deltas, coeffs, current_coeff)
         results_array : ndarray
@@ -279,8 +284,8 @@ class FiniteDifference(ApproximationScheme):
         ----------
         system : System
             The system having its derivs approximated.
-        idx_info : tuple of (ndarray of int, ndarray of float)
-            Tuple of wrt indices and corresponding data array to perturb.
+        idx_info : tuple of (Vector, ndarray of int)
+            Tuple of wrt indices and corresponding data vector to perturb.
         delta : float
             Perturbation amount.
         total : bool
@@ -291,9 +296,9 @@ class FiniteDifference(ApproximationScheme):
         ndarray
             The results from running the perturbed system.
         """
-        for arr, idxs in idx_info:
-            if arr is not None:
-                arr._data[idxs] += delta
+        for vec, idxs in idx_info:
+            if vec is not None:
+                vec._data[idxs] += delta
 
         if total:
             system.run_solve_nonlinear()
@@ -310,8 +315,27 @@ class FiniteDifference(ApproximationScheme):
         # if results_vec are the residuals then we need to remove the delta's we added earlier
         # to the outputs
         if not total:
-            for arr, idxs in idx_info:
-                if arr is system._outputs:
-                    arr._data[idxs] -= delta
+            for vec, idxs in idx_info:
+                if vec is system._outputs:
+                    vec._data[idxs] -= delta
 
         return self._results_tmp
+
+    def apply_directional(self, data, direction):
+        """
+        Apply stepsize to direction and embed into approximation data.
+
+        Parameters
+        ----------
+        data : tuple
+            Tuple contains step size, and other info.
+        direction : ndarray
+            Vector containing derivative direction.
+
+        Returns
+        -------
+        ndarray
+            New tuple with new step direction.
+        """
+        deltas, coeffs, current_coeff = data
+        return (np.outer(np.atleast_1d(deltas), direction), coeffs, current_coeff)

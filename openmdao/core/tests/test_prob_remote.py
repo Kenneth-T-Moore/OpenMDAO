@@ -7,7 +7,7 @@ from openmdao.utils.mpi import MPI
 from openmdao.utils.general_utils import set_pyoptsparse_opt
 from openmdao.proc_allocators.default_allocator import DefaultAllocator
 from openmdao.test_suite.components.expl_comp_array import TestExplCompArrayDense
-from openmdao.utils.assert_utils import assert_rel_error
+from openmdao.utils.assert_utils import assert_near_equal
 
 
 if MPI:
@@ -24,7 +24,7 @@ if OPTIMIZER:
 
 
 
-@unittest.skipUnless(MPI and PETScVector, "only run with MPI and PETSc.")
+@unittest.skipUnless(MPI and PETScVector, "MPI and PETSc are required.")
 class ProbRemoteTestCase(unittest.TestCase):
 
     N_PROCS = 2
@@ -82,19 +82,19 @@ class ProbRemoteTestCase(unittest.TestCase):
 
         with self.assertRaises(RuntimeError) as cm:
             loc = p.is_local('indep.x')
-        self.assertEqual(str(cm.exception), "is_local('indep.x') was called before setup() completed.")
+        self.assertEqual(str(cm.exception), "Problem: is_local('indep.x') was called before setup() completed.")
 
         with self.assertRaises(RuntimeError) as cm:
             loc = p.is_local('par.C1')
-        self.assertEqual(str(cm.exception), "is_local('par.C1') was called before setup() completed.")
+        self.assertEqual(str(cm.exception), "Problem: is_local('par.C1') was called before setup() completed.")
 
         with self.assertRaises(RuntimeError) as cm:
             loc = p.is_local('par.C1.y')
-        self.assertEqual(str(cm.exception), "is_local('par.C1.y') was called before setup() completed.")
+        self.assertEqual(str(cm.exception), "Problem: is_local('par.C1.y') was called before setup() completed.")
 
         with self.assertRaises(RuntimeError) as cm:
             loc = p.is_local('par.C1.x')
-        self.assertEqual(str(cm.exception), "is_local('par.C1.x') was called before setup() completed.")
+        self.assertEqual(str(cm.exception), "Problem: is_local('par.C1.x') was called before setup() completed.")
 
         p.setup()
         p.final_setup()
@@ -120,7 +120,7 @@ class ProbRemoteTestCase(unittest.TestCase):
             self.assertTrue(p.is_local('par.C2.y'), 'par.C2.y should be local')
 
 @unittest.skip("FIXME: test is unreliable on CI... (timeout)")
-#@unittest.skipUnless(MPI and PETScVector, "only run with MPI and PETSc.")
+#@unittest.skipUnless(MPI and PETScVector, "MPI and PETSc are required.")
 class ProbRemote4TestCase(unittest.TestCase):
 
     N_PROCS = 4
@@ -133,7 +133,7 @@ class ProbRemote4TestCase(unittest.TestCase):
         self.assertEqual(comm.size, 2)
 
         prob = Problem(comm=comm)
-        model = prob.model = Group()
+        model = prob.model
 
         p1 = model.add_subsystem('p1', IndepVarComp('x', 99.0))
         p1.add_design_var('x', lower=-50.0, upper=50.0)
@@ -156,7 +156,7 @@ class ProbRemote4TestCase(unittest.TestCase):
         prob.driver.options['optimizer'] = OPTIMIZER
         prob.driver.options['print_results'] = False
 
-        prob.setup(check=False)
+        prob.setup()
         prob.run_model()
 
         failed = prob.run_driver()
@@ -171,4 +171,4 @@ class ProbRemote4TestCase(unittest.TestCase):
 
         objs = comm.allgather(prob['obj.o'])
         for i, obj in enumerate(objs):
-            assert_rel_error(self, obj, 2.0, 1e-6)
+            assert_near_equal(obj, 2.0, 1e-6)

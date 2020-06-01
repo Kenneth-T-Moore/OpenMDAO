@@ -3,14 +3,12 @@ Greiwank function with N continuous desgin variables and M integer desgin
 variables. The Griewank function is a function widely used to test the
 convergence of optimization functions.
 """
-from six.moves import range
-
 import numpy as np
 
-from openmdao.api import ExplicitComponent
+import openmdao.api as om
 
 
-class Greiwank(ExplicitComponent):
+class Greiwank(om.ExplicitComponent):
     """
     Greiwank function with N continuous desgin variables and M integer desgin variables.
 
@@ -23,12 +21,12 @@ class Greiwank(ExplicitComponent):
     """
 
     def initialize(self):
-        self.metadata.declare('num_int', 2, types=int)
-        self.metadata.declare('num_cont', 2, types=int)
+        self.options.declare('num_int', 2, types=int)
+        self.options.declare('num_cont', 2, types=int)
 
     def setup(self):
-        num_int = self.metadata['num_int']
-        num_cont = self.metadata['num_cont']
+        num_int = self.options['num_int']
+        num_cont = self.options['num_cont']
 
         # Inputs
         self.add_input('xI', np.zeros((num_int, )))

@@ -1,10 +1,6 @@
 """Define the ExplicitComponent class."""
 
-from __future__ import division
-
 import numpy as np
-from six import itervalues, iteritems
-from six.moves import range
 
 from openmdao.core.component import Component, _full_slice
 from openmdao.utils.class_util import overrides_method
@@ -157,7 +153,7 @@ class ExplicitComponent(Component):
             self._set_approx_partials_meta()
 
     def add_output(self, name, val=1.0, shape=None, units=None, res_units=None, desc='',
-                   lower=None, upper=None, ref=1.0, ref0=0.0, res_ref=None):
+                   lower=None, upper=None, ref=1.0, ref0=0.0, res_ref=None, tags=None):
         """
         Add an output variable to the component.
 
@@ -200,6 +196,9 @@ class ExplicitComponent(Component):
             Scaling parameter. The value in the user-defined res_units of this output's residual
             when the scaled value is 1. Default is None, which means residual scaling matches
             output scaling.
+        tags : str or list of strs
+            User defined tags that can be used to filter what gets listed when calling
+            list_inputs and list_outputs and also when listing results from case recorders.
 
         Returns
         -------
@@ -213,10 +212,11 @@ class ExplicitComponent(Component):
                                                          val=val, shape=shape, units=units,
                                                          res_units=res_units, desc=desc,
                                                          lower=lower, upper=upper,
-                                                         ref=ref, ref0=ref0, res_ref=res_ref)
+                                                         ref=ref, ref0=ref0, res_ref=res_ref,
+                                                         tags=tags)
 
     def _approx_subjac_keys_iter(self):
-        for abs_key, meta in iteritems(self._subjacs_info):
+        for abs_key, meta in self._subjacs_info.items():
             if 'method' in meta:
                 method = meta['method']
                 if (method is not None and method in self._approx_schemes and abs_key[1]
@@ -401,7 +401,7 @@ class ExplicitComponent(Component):
         with self._unscaled_context(outputs=[self._outputs], residuals=[self._residuals]):
             # Computing the approximation before the call to compute_partials allows users to
             # override FD'd values.
-            for approximation in itervalues(self._approx_schemes):
+            for approximation in self._approx_schemes.values():
                 approximation.compute_approximations(self, jac=self._jacobian)
 
             if self._has_compute_partials:

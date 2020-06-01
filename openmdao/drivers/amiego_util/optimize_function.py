@@ -1,10 +1,6 @@
 """
 Optimize a python function or method with pyoptsparse.
 """
-from __future__ import print_function
-
-from six import iteritems
-
 import numpy as np
 
 from openmdao.utils.general_utils import set_pyoptsparse_opt
@@ -76,7 +72,7 @@ def snopt_opt(objfun, desvar, lb, ub, ncon=None, title=None, options=None,
     opt = getattr(_tmp, OPTIMIZER)()
 
     if options:
-        for name, value in iteritems(options):
+        for name, value in options.items():
             opt.setOption(name, value)
 
     if OPTIMIZER == 'SNOPT':
@@ -84,6 +80,11 @@ def snopt_opt(objfun, desvar, lb, ub, ncon=None, title=None, options=None,
         opt.setOption('Verify level', -1)
         opt.setOption('iSumm', 0)
         opt.setOption('iPrint', 0)
+
+        # Use SNOPT fd instead of pyoptsparse
+        if sens == 'FD':
+            sens = None
+
     elif OPTIMIZER == 'SLSQP':
         opt.setOption('MAXIT', 100)
     elif OPTIMIZER == 'CONMIN':

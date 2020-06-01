@@ -1,5 +1,3 @@
-from __future__ import print_function
-
 import unittest
 import os
 from fnmatch import fnmatch, filter as fnfilter
@@ -27,7 +25,7 @@ dir_excludes = [
 
 file_excludes = [
     'test_*',
-    '__init__.py',
+    '_*.py',
 ]
 
 ignores = {
@@ -117,8 +115,7 @@ class LintTestCase(unittest.TestCase):
 
     @unittest.skipUnless(pydocstyle, "requires 'pydocstyle', install openmdao[test]")
     def test_pep257(self):
-        failures = [str(fail) for fail in pydocstyle.check(_get_files(),
-                                                      ignore=ignores['pep257'])]
+        failures = [str(fail) for fail in pydocstyle.check(_get_files(), ignore=ignores['pep257']) ]
         if failures:
             self.fail('{} PEP 257 Failure(s):\n'.format(len(failures)) + '\n'.join(failures))
 

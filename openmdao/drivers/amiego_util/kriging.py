@@ -3,10 +3,6 @@ Surrogate model based on Kriging.
 
 In AMIEGO, optimization over the integer design variables are done on this surrogate.
 """
-from __future__ import print_function
-
-from six.moves import zip, range
-
 import numpy as np
 import scipy.linalg as linalg
 from scipy.optimize import minimize

@@ -1,10 +1,6 @@
 """Define the ImplicitComponent class."""
 
-from __future__ import division
-
 import numpy as np
-from six import itervalues, iteritems
-from six.moves import range
 
 from openmdao.core.component import Component
 from openmdao.recorders.recording_iteration_stack import Recording
@@ -259,7 +255,7 @@ class ImplicitComponent(Component):
                         d_outputs.read_only = d_residuals.read_only = False
 
     def _approx_subjac_keys_iter(self):
-        for abs_key, meta in iteritems(self._subjacs_info):
+        for abs_key, meta in self._subjacs_info.items():
             if 'method' in meta:
                 method = meta['method']
                 if method is not None and method in self._approx_schemes:
@@ -281,7 +277,7 @@ class ImplicitComponent(Component):
         with self._unscaled_context(outputs=[self._outputs]):
             # Computing the approximation before the call to compute_partials allows users to
             # override FD'd values.
-            for approximation in itervalues(self._approx_schemes):
+            for approximation in self._approx_schemes.values():
                 approximation.compute_approximations(self, jac=self._jacobian)
 
             self._inputs.read_only = self._outputs.read_only = True
@@ -298,7 +294,8 @@ class ImplicitComponent(Component):
         if (jac is None or jac is self._assembled_jac) and self._assembled_jac is not None:
             self._assembled_jac._update(self)
 
-    def apply_nonlinear(self, inputs, outputs, residuals):
+    def apply_nonlinear(self, inputs, outputs, residuals, discrete_inputs=None,
+                        discrete_outputs=None):
         """
         Compute residuals given inputs and outputs.
 
@@ -312,6 +309,10 @@ class ImplicitComponent(Component):
             unscaled, dimensional output variables read via outputs[key]
         residuals : Vector
             unscaled, dimensional residuals written to via residuals[key]
+        discrete_inputs : dict or None
+            If not None, dict containing discrete input values.
+        discrete_outputs : dict or None
+            If not None, dict containing discrete output values.
         """
         pass
 
@@ -429,12 +430,21 @@ class ImplicitComponent(Component):
         """
         Return list of all states at and below this system.
 
+        If final setup has not been performed yet, return relative names for this system only.
+
         Returns
         -------
         list
             List of all states.
         """
-        return [name for name in self._outputs._names]
+        if self._outputs is not None:
+            # final setup has been performed, return absolute names
+            return [name for name in self._outputs._names] + \
+                   [name for name in self._var_allprocs_discrete['output']]
+        else:
+            # final setup has not been performed, return relative names for this system only
+            return [name for name in self._var_rel_names['output']] + \
+                   [name for name in self._var_discrete['output']]
 
     def _list_states_allprocs(self):
         """

@@ -1,3 +1,3 @@
-__version__ = '2.7.1'
+__version__ = '3.1.1-dev'
 
 INF_BOUND = 1.0E30

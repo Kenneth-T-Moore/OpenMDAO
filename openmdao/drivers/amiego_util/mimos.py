@@ -10,9 +10,6 @@ Purdue University, West Lafayette, IN 47906
 2018~9
 Implemented in OpenMDAO, May 2019, Kenneth T. Moore
 """
-from __future__ import print_function
-from six import iteritems
-
 from math import factorial
 import os
 
@@ -126,7 +123,7 @@ class MIMOS(Driver):
         super(MIMOS, self)._setup_driver(problem)
 
         model_mpi = None
-        comm = self._problem.comm
+        comm = self._problem().comm
         if self._concurrent_pop_size > 0:
             model_mpi = (self._concurrent_pop_size, self._concurrent_color)
         elif not self.options['run_parallel']:
@@ -183,7 +180,7 @@ class MIMOS(Driver):
         ndarray
             Objective values at non dominated points.
         """
-        model = self._problem.model
+        model = self._problem().model
         ga = self._ga
         ga.nobj = 3
 
@@ -204,14 +201,14 @@ class MIMOS(Driver):
         desvars = self._designvars
         desvar_vals = self.get_design_var_values()
         x0 = np.empty(count)
-        for name, meta in iteritems(desvars):
+        for name, meta in desvars.items():
             i, j = self.i_idx_cache[name]
             x0[i:j] = desvar_vals[name]
 
         # Bits of resolution
         abs2prom = model._var_abs2prom['output']
 
-        for name, meta in iteritems(desvars):
+        for name, meta in desvars.items():
             i, j = self.i_idx_cache[name]
 
             if name in self._designvars_discrete:
