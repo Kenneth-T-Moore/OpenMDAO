@@ -747,6 +747,7 @@ class GeneticAlgorithm(object):
         pot_idx = np.arange(n_pts)
         while i < len(ypop):
             nd_point_mask = np.any(ypop < ypop[i, :], axis=1)
+            print('best', ypop[i, :])
             nd_point_mask[i] = True
 
             # Remove dominated points
