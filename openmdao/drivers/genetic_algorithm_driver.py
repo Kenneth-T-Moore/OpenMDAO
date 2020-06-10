@@ -20,8 +20,6 @@ Sobieszczanski-Sobieski, J., Morris, A. J., van Tooren, M. J. L. (2015)
 Multidisciplinary Design Optimization Supported by Knowledge Based Engineering.
 John Wiley & Sons, Ltd.
 """
-from __future__ import division
-
 import os
 import copy
 
@@ -747,7 +745,6 @@ class GeneticAlgorithm(object):
         pot_idx = np.arange(n_pts)
         while i < len(ypop):
             nd_point_mask = np.any(ypop < ypop[i, :], axis=1)
-            print('best', ypop[i, :])
             nd_point_mask[i] = True
 
             # Remove dominated points
