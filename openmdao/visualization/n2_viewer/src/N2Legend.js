@@ -19,10 +19,12 @@ class N2Legend {
             'component': false,
             'input': false,
             'unconnectedInput': false,
+            'autoivcInput': false,
             'outputExplicit': false,
             'outputImplicit': false,
             'collapsed': true,
-            'connection': true
+            'connection': true,
+            'declaredPartial': true
         };
 
         this.showN2Symbols = {
@@ -33,7 +35,8 @@ class N2Legend {
 
         this.sysAndVar = [
             { 'name': "Connection", 'color': N2Style.color.connection },
-            { 'name': "Collapsed", 'color': N2Style.color.collapsed }
+            { 'name': "Collapsed", 'color': N2Style.color.collapsed },
+            { 'name': "Declared Partial", 'color': N2Style.color.declaredPartial}
         ];
 
         this.n2Symbols = [];
@@ -81,7 +84,8 @@ class N2Legend {
                 outputExplicit,
                 outputImplicit,
                 collapsed,
-                connection
+                connection,
+                declaredPartial
             } = this.showSysVar;
 
             const linearSolver = node.linear_solver;
@@ -145,6 +149,13 @@ class N2Legend {
                     this.sysAndVar.push({
                         'name': 'Implicit Output',
                         'color': N2Style.color.unknownImplicit
+                    })
+                }
+                else if (!this.showSysVar.autoivcInput && node.isAutoIvcParam()) {
+                    this.showSysVar.autoivcInput = true;
+                    this.sysAndVar.push({
+                        'name': 'Auto-IVC Input',
+                        'color': N2Style.color.autoivcParam
                     })
                 }
                 else if (!this.showSysVar.unconnectedInput && node.isUnconnectedParam()) {

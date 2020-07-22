@@ -274,10 +274,10 @@ class SimpleGADriver(Driver):
         for name, meta in desvars.items():
             i, j = self._desvar_idx[name]
 
-            if name in self._designvars_discrete:
-                prom_name = name
-            else:
+            if name in abs2prom:
                 prom_name = abs2prom[name]
+            else:
+                prom_name = name
 
             if name in user_bits:
                 val = user_bits[name]
@@ -405,7 +405,12 @@ class SimpleGADriver(Driver):
         nr_objectives = len(objs)
 
         # Single objective, if there is only one objective, which has only one element
-        is_single_objective = (nr_objectives == 1) and (len(objs) == 1)
+        if nr_objectives > 1:
+            is_single_objective = False
+        else:
+            for obj in objs.items():
+                is_single_objective = len(obj) == 1
+                break
 
         obj_exponent = self.options['multi_obj_exponent']
         if self.options['multi_obj_weights']:  # not empty
@@ -514,6 +519,8 @@ class GeneticAlgorithm(object):
         If the model in objfun is also parallel, then this will contain a tuple with the the
         total number of population points to evaluate concurrently, and the color of the point
         to evaluate on this rank.
+    nobj : int
+        Number of objectives.
     npop : int
         Population size.
     objfun : function
@@ -732,7 +739,6 @@ class GeneticAlgorithm(object):
         ndarray
             Objective at nondominated design points.
         """
-
         if len(x_nd) > 1:
             ypop = np.concatenate((np.array(obj_nd), obj), axis=0)
             xpop = np.concatenate((x_nd, x), axis=0)
@@ -822,7 +828,7 @@ class GeneticAlgorithm(object):
             new_obj.append(obj_val[selected])
 
         return np.concatenate(np.array(new_gen), axis=1).reshape(old_gen.shape), \
-               np.concatenate(np.array(new_obj), axis=1).reshape(obj_val.shape)
+            np.concatenate(np.array(new_obj), axis=1).reshape(obj_val.shape)
 
     def crossover(self, old_gen, Pc):
         """

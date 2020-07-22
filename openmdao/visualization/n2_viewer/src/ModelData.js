@@ -3,22 +3,20 @@ class ModelData {
 
     /** Do some discovery in the tree and rearrange & enhance where necessary. */
     constructor(modelJSON) {
-        debugInfo(modelJSON);
+
         modelJSON.tree.name = 'model'; // Change 'root' to 'model'
         this.conns = modelJSON.connections_list;
         this.abs2prom = modelJSON.abs2prom; // May be undefined.
         this.declarePartialsList = modelJSON.declare_partials_list;
+        this.useDeclarePartialsList = (this.declarePartialsList.length > 0);
         this.sysPathnamesList = modelJSON.sys_pathnames_list;
 
         this.maxDepth = 1;
         this.idCounter = 0;
         this.unconnectedParams = 0;
+        this.autoivcSources = 0;
         this.nodePaths = {};
 
-        if (modelJSON.options.use_declare_partial_info &&
-            this.declarePartialsList.length == 0) {
-            console.warn("Declare partial list is empty, but --use_declare_partial_info specified.")
-        }
 
         startTimer('ModelData._convertToN2TreeNodes');
         this.root = this.tree = modelJSON.tree = this._convertToN2TreeNodes(modelJSON.tree);
@@ -41,6 +39,12 @@ class ModelData {
 
         debugInfo("New model: ", this);
         // this.errorCheck();
+    }
+
+    static uncompressModel(b64str) {
+        const compressedData = atob(b64str);
+        const jsonStr = window.pako.inflate(compressedData, { to: 'string' });
+        return JSON.parse(jsonStr);
     }
 
     /**
@@ -72,7 +76,7 @@ class ModelData {
         let newNode = new N2TreeNode(element);
 
         if (newNode.hasChildren()) {
-            for (let i = 0; i < newNode.children.length; ++i) {
+            for (let i in newNode.children) {
                 newNode.children[i] = this._convertToN2TreeNodes(newNode.children[i]);
                 newNode.children[i].parent = newNode;
                 if (exists(newNode.children[i].parentComponent))
@@ -92,11 +96,9 @@ class ModelData {
      * @return True is node is implicit, false otherwise.
      */
     _setParentsAndDepth(node, parent, depth) { // Formerly InitTree()
-        node.numLeaves = 0; // for nested params
         node.depth = depth;
         node.parent = parent;
         node.id = ++this.idCounter; // id starts at 1 for if comparision
-        node.absPathName = "";
 
         if (node.parent) { // not root node? node.parent.absPathName : "";
             if (node.parent.absPathName != "") {
@@ -127,10 +129,24 @@ class ModelData {
             this.maxSystemDepth = Math.max(depth, this.maxSystemDepth);
         }
 
+        node.childNames.add(node.absPathName); // Add the node itself
+
         if (node.hasChildren()) {
+            node.numDescendants = node.children.length;
             for (let child of node.children) {
+
                 let implicit = this._setParentsAndDepth(child, node, depth + 1);
                 if (implicit) node.implicit = true;
+
+                node.numDescendants += child.numDescendants;
+
+                // Add absolute pathnames of children to a set for quick searching
+                if (!node.isRoot()) { // All nodes are children of the model root 
+                    node.childNames.add(child.absPathName);
+                    for (let childName of child.childNames) {
+                        node.childNames.add(childName);
+                    }
+                }
             }
         }
 
@@ -188,6 +204,18 @@ class ModelData {
         return false;
     }
 
+    hasAutoIvcSrc(elementPath) {
+        for (let conn of this.conns) {
+            if (conn.tgt == elementPath && conn.src.match(/^_auto_ivc.*$/)) {
+                debugInfo(elementPath + " source is an auto-ivc output.");
+                this.autoivcSources++;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /**
      * Create an array in each node containing references to its
      * children that are subsystems. Runs recursively over the node's
@@ -218,9 +246,9 @@ class ModelData {
      * @return {Boolean} True if the string was found.
      */
     isDeclaredPartial(srcObj, tgtObj) {
-        let partialsString = tgtObj.absPathName + " > " + srcObj.absPathName;
+        let partialsStr = tgtObj.absPathName + " > " + srcObj.absPathName;
 
-        return this.declarePartialsList.includes(partialsString);
+        return this.declarePartialsList.includes(partialsStr);
     }
 
     /**
@@ -287,6 +315,9 @@ class ModelData {
         let throwLbl = 'ModelData._computeConnections: ';
 
         for (let conn of this.conns) {
+            // Ignore connections from _auto_ivc, which is intentionally not included.
+            if (conn.src.match(/^_auto_ivc.*$/)) continue;
+
             // Process sources
             let srcObj = this.nodePaths[conn.src];
 
@@ -309,7 +340,6 @@ class ModelData {
             for (let obj = srcObj.parent; obj != null; obj = obj.parent) {
                 srcObjParents.push(obj);
             }
-
 
             // Process targets
             let tgtObj = this.nodePaths[conn.tgt];
@@ -407,8 +437,12 @@ class ModelData {
             console.warn("identifyUnconnectedParam error: absPathName not set for ", node);
         }
         else {
-            if (node.isParam() && !node.hasChildren() && !this.hasAnyConnection(node.absPathName))
-                node.type = "unconnected_param";
+            if (node.isParam()) {
+                if (!node.hasChildren() && !this.hasAnyConnection(node.absPathName))
+                    node.type = "unconnected_param";
+                else if (this.hasAutoIvcSrc(node.absPathName))
+                    node.type = "autoivc_param";
+            }
         }
     }
 
