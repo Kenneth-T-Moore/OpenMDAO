@@ -700,7 +700,6 @@ class TestInterpNDPython(unittest.TestCase):
 
         with self.assertRaises(OutOfBoundsError) as cm:
             interp.interpolate(np.array([1, np.nan]))
-
         err = cm.exception
 
         self.assertEqual(str(err), 'One of the requested xi contains a NaN')
@@ -708,6 +707,15 @@ class TestInterpNDPython(unittest.TestCase):
         self.assertTrue(np.isnan(err.value))
         self.assertEqual(err.lower, 0)
         self.assertEqual(err.upper, 1)
+
+    def test_out_of_bounds(self):
+        p1 = np.linspace(0, 1, 10)
+        f_p1 = np.sqrt(p1)
+
+        interp = InterpND(method='slinear', points=p1, values=f_p1, extrapolate=False)
+
+        with self.assertRaises(OutOfBoundsError) as cm:
+            x_new = interp.interpolate(1.5, compute_derivative=True)
 
     def test_interp_1Dflat(self):
 

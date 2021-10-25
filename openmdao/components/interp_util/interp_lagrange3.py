@@ -386,11 +386,11 @@ class InterpLagrange3D(InterpAlgorithmFixed):
         Cache of all computed coefficients when running vectorized.
     """
 
-    def __init__(self, grid, values, interp, **kwargs):
+    def __init__(self, grid, values, interp, extrapolate, **kwargs):
         """
         Initialize table and subtables.
         """
-        super().__init__(grid, values, interp)
+        super().__init__(grid, values, interp, extrapolate)
         self.coeffs = {}
         self.vec_coeff = None
         self.k = 4

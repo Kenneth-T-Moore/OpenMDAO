@@ -19,11 +19,15 @@ class InterpAlgorithm(object):
         Array containing the values at all points in grid.
     interp : class
         Interpolation class to be used for subsequent table dimensions.
+    extrapolate : bool
+        When False, raise an error if we extrapolate beyond table bounds.
     **kwargs : dict
         Interpolator-specific options to pass onward.
 
     Attributes
     ----------
+    extrapolate : bool
+        When False, raise an error if we extrapolate beyond table bounds.
     grid : tuple(ndarray)
         Tuple containing x grid locations for this dimension.
     k : int
@@ -50,7 +54,7 @@ class InterpAlgorithm(object):
         If True, this method is vectorized and can simultaneously solve multiple interpolations.
     """
 
-    def __init__(self, grid, values, interp, **kwargs):
+    def __init__(self, grid, values, interp, extrapolate, **kwargs):
         """
         Initialize table and subtables.
         """
@@ -74,6 +78,7 @@ class InterpAlgorithm(object):
         self._compute_d_dx = True
         self._full_slice = None
         self._supports_d_dvalues = True
+        self.extrapolate = extrapolate
 
     def initialize(self):
         """
@@ -270,11 +275,15 @@ class InterpAlgorithmFixed(object):
         Array containing the table values.
     interp : class
         Unused, but kept for API compatibility.
+    extrapolate : bool
+        When False, raise an error if we extrapolate beyond table bounds.
     **kwargs : dict
         Interpolator-specific options to pass onward.
 
     Attributes
     ----------
+    extrapolate : bool
+        When False, raise an error if we extrapolate beyond table bounds.
     grid : tuple(ndarray)
         Tuple (x, y, z) of grid locations.
     k : int
@@ -299,7 +308,7 @@ class InterpAlgorithmFixed(object):
         If True, this method is vectorized and can simultaneously solve multiple interpolations.
     """
 
-    def __init__(self, grid, values, interp, **kwargs):
+    def __init__(self, grid, values, interp, extrapolate, **kwargs):
         """
         Initialize interp algorithm.
         """
@@ -318,6 +327,7 @@ class InterpAlgorithmFixed(object):
         self._compute_d_dvalues = False
         self._supports_d_dvalues = False
         self._compute_d_dx = True
+        self.extrapolate = extrapolate
 
     def initialize(self):
         """
@@ -389,6 +399,12 @@ class InterpAlgorithmFixed(object):
         for j in range(self.dim):
             if self.vectorized(x):
                 self.last_index[j] = np.searchsorted(self.grid[j], x[..., j], side='left') - 1
+
+                if not self.extrapolate:
+                    npt = len(self.grid[j])
+                    if np.any(self.last_index[j] > npt - 1) or np.any(self.last_index[j] < 0):
+                        raise OutOfBoundsError("One of the requested xi is out of bounds: ",
+                                               j, x[..., j], self.grid[0], self.grid[-1])
             else:
                 self.last_index[j], _ = self._bracket_dim(self.grid[j], x[j],
                                                           self.last_index[j])
