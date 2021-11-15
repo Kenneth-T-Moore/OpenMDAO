@@ -4,9 +4,24 @@ Interpolate using a third order Lagrange polynomial.
 Based on NPSS implementation.
 """
 import numpy as np
+from jax import jit
+import jax.numpy as jnp
+from jax.config import config
+config.update("jax_enable_x64", True)
 
 from openmdao.components.interp_util.interp_algorithm import InterpAlgorithm, \
     InterpAlgorithmSemi, InterpAlgorithmFixed
+
+
+@jit
+def jax_apply(a, xx, yy, zz, dx, dy, dz, d_x):
+    val = jnp.einsum('qi,qj,qk,qijk->q', xx, yy, zz, a)
+
+    # Compute derivatives using the 64 coefficients.
+    d_x = d_x.at[:, 0].set(jnp.einsum('qi,qj,qk,qijk->q', dx, yy, zz, a[:, 1:, ...]))
+    d_x = d_x.at[:, 1].set(jnp.einsum('qi,qj,qk,qijk->q', xx, dy, zz, a[:, :, 1:, :]))
+    d_x = d_x.at[:, 2].set(jnp.einsum('qi,qj,qk,qijk->q', xx, yy, dz, a[:, :, :, 1:]))
+    return val, d_x
 
 
 class InterpLagrange3(InterpAlgorithm):
@@ -724,9 +739,9 @@ class Interp3DLagrange3(InterpAlgorithmFixed):
         zz[:, 2] = z * z
         zz[:, 3] = zz[:, 2] * z
 
-        val = np.einsum('qi,qj,qk,qijk->q', xx, yy, zz, a)
+        #val = np.einsum('qi,qj,qk,qijk->q', xx, yy, zz, a)
 
-        # Compute derivatives using the 64 coefficients.
+        ## Compute derivatives using the 64 coefficients.
 
         dx = np.empty((vec_size, 3), dtype=dtype)
         dx[:, 0] = 1.0
@@ -744,11 +759,14 @@ class Interp3DLagrange3(InterpAlgorithmFixed):
         dz[:, 2] = 3.0 * zz[:, 2]
 
         d_x = np.empty((vec_size, 3), dtype=dtype)
-        d_x[:, 0] = np.einsum('qi,qj,qk,qijk->q', dx, yy, zz, a[:, 1:, ...])
-        d_x[:, 1] = np.einsum('qi,qj,qk,qijk->q', xx, dy, zz, a[:, :, 1:, :])
-        d_x[:, 2] = np.einsum('qi,qj,qk,qijk->q', xx, yy, dz, a[:, :, :, 1:])
+        #d_x[:, 0] = np.einsum('qi,qj,qk,qijk->q', dx, yy, zz, a[:, 1:, ...])
+        #d_x[:, 1] = np.einsum('qi,qj,qk,qijk->q', xx, dy, zz, a[:, :, 1:, :])
+        #d_x[:, 2] = np.einsum('qi,qj,qk,qijk->q', xx, yy, dz, a[:, :, :, 1:])
 
-        return val, d_x, None, None
+        val, derivs = jax_apply(a, xx, yy, zz, dx, dy, dz, d_x)
+        d_x[:] = derivs
+
+        return val, derivs, None, None
 
     def compute_coeffs_vectorized(self, idx):
         """
