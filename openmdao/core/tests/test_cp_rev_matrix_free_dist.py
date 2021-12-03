@@ -25,7 +25,7 @@ class MixedDistrib2(om.ExplicitComponent):
         x = inputs['in_dist']
         y = inputs['in_serial']
         # "Computationally Intensive" operation that we wish to parallelize.
-        f_x = x**2 - 2.0*x + 4.0 
+        f_x = x**2 - 2.0*x + 4.0
         # These operations are repeated on all procs.
         f_y = y ** 0.5
         g_y = y**2 + 3.0*y - 5.0
@@ -40,7 +40,6 @@ class MixedDistrib2(om.ExplicitComponent):
         total_sum = local_sum.copy()
         MPI.COMM_WORLD.Allreduce(local_sum, total_sum, op=MPI.SUM)
         outputs['out_serial'] = g_y * total_sum
-
 
     def compute_jacvec_product(self, inputs, d_inputs, d_outputs, mode):
 
@@ -63,24 +62,23 @@ class MixedDistrib2(om.ExplicitComponent):
 
         num_x = len(x)
 
-        d_g_y__d_y = 2*y + 3.
-        d_g_x__d_x = 0.5*x**-0.5
+        dg_dy = 2 * y + 3.
+        dg_dx = 0.5 * x ** -0.5
 
-        d_out_serial__d_y =  d_g_y__d_y # scalar
-        d_out_serial__d_x =  g_y*d_g_x__d_x.reshape((1,num_x))
+        dg_dx = g_y * dg_dx.reshape((1, num_x))
 
         if mode == 'fwd':
             if 'out_serial' in d_outputs:
                 if 'in_dist' in d_inputs:
-                    d_outputs['out_serial'] += d_out_serial__d_x.dot(d_inputs['in_dist'])
+                    d_outputs['out_serial'] += dg_dx.dot(d_inputs['in_dist'])
                 if 'in_serial' in d_inputs:
-                    d_outputs['out_serial'] += d_out_serial__d_y.dot(d_inputs['in_serial'])
+                    d_outputs['out_serial'] += dg_dy.dot(d_inputs['in_serial'])
         elif mode == 'rev':
             if 'out_serial' in d_outputs:
                 if 'in_dist' in d_inputs:
-                    d_inputs['in_dist'] += d_out_serial__d_x.T.dot(d_outputs['out_serial'])
+                    d_inputs['in_dist'] += dg_dx.T.dot(d_outputs['out_serial'])
                 if 'in_serial' in d_inputs:
-                    d_inputs['in_serial'] += total_sum*d_out_serial__d_y.T.dot(d_outputs['out_serial'])
+                    d_inputs['in_serial'] += total_sum * dg_dy.T.dot(d_outputs['out_serial'])
 
 
 @unittest.skipUnless(MPI, "MPI is required.")
@@ -92,7 +90,7 @@ class CheckPartialsRev(unittest.TestCase):
         '''
         -----------------------------------------------------
         The erroneous output contained these values:
-        
+
             Raw Forward Derivative (Jfor)
         [[62.5 62.5 62.5]]
 
