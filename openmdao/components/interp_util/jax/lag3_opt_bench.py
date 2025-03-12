@@ -19,12 +19,12 @@ config.update("jax_enable_x64", True)
 
 # Config
 VEC_SIZE = 10
-NUM_ITER = 2000
+NUM_ITER = 100
 NUM_COMP = 5
 DERIV_FRAC = 1
 
 print('')
-print(f"Num Comps = {NUM_COMP}, Num Nodes = {VEC_SIZE}, Num Opt Iters = {NUM_ITER}, Deriv Iter Percentage = {100.0 / DERIV_FRAC}")
+print(f"Num Comps = {NUM_COMP}, Num Nodes = {VEC_SIZE}, Num Opt Iters = {NUM_ITER}, Num Deriv Iters = {int(np.floor(NUM_ITER / DERIV_FRAC))}")
 print('')
 
 # Problem Setup: Interpolate over a 2d space.
@@ -52,7 +52,7 @@ x_jax = jnp.array([[8.5, 2.6, 0.34]])
 interp_om = InterpND(points=(p1, p2, p3), values=values, method='lagrange3', extrapolate=True)
 interp_om_fastest = InterpND(points=(p1, p2, p3), values=values, method='3D-lagrange3', extrapolate=True)
 
-@jit
+#@jit
 def sub_interp(x, x_data, y_data, idx=None):
 
     if idx is None:
@@ -86,6 +86,12 @@ def sub_interp(x, x_data, y_data, idx=None):
         q3 = sub_interp(x[1:], x_data[1:], y_data[idx + 1, :], idx=sub_idx) * (c13 * c23 * c34)
         q4 = sub_interp(x[1:], x_data[1:], y_data[idx + 2, :], idx=sub_idx) * (c14 * c24 * c34)
 
+        # Hypothetical performance ceiling.
+        # q1 = 0
+        # q2 = 0
+        # q3 = 0
+        # q4 = 0
+
     else:
         q1 = y_data[idx - 1] * (c12 * c13 * c14)
         q2 = y_data[idx] * (c12 * c23 * c24)
@@ -95,13 +101,13 @@ def sub_interp(x, x_data, y_data, idx=None):
     return xx4 * (xx3 * (q1 * xx2 - q2 * xx1) + q3 * xx1 * xx2) - q4 * xx1 * xx2 * xx3
 
 
-@jit
-def slinear_interpolate(x_data_jax, y_data_jax, x_query):
+#@jit
+#def jax_interpolate(x_data_jax, y_data_jax, x_query):
 
-    def interp(xq):
-        return sub_interp(xq, x_data_jax, y_data_jax)
+    #def interp(xq):
+        #return sub_interp(xq, x_data_jax, y_data_jax)
 
-    return vmap(interp, in_axes=0)(x_query)
+    #return vmap(interp, in_axes=0)(x_query)
 
 
 # Components
@@ -144,7 +150,10 @@ class JAXInterp(om.JaxExplicitComponent):
         super().__init__(**kwargs)
 
         # faster with this off, but individual decorates active
-        self.options['use_jit'] = False
+        self.options['use_jit'] = True
+
+        self.p_jax = p_jax
+        self.values_jax = values_jax
 
     def setup(self):
 
@@ -153,12 +162,21 @@ class JAXInterp(om.JaxExplicitComponent):
 
     def setup_partials(self):
 
-        self.declare_partials('y', 'x')
+        #self.declare_partials('y', 'x')
+
+        rows = np.repeat(np.arange(VEC_SIZE), 3)
+        cols = np.arange(VEC_SIZE * 3)
+        self.declare_partials('y', 'x', rows=rows, cols=cols)
+
+    def get_self_statics(self):
+        return self.p_jax, self.values_jax
 
     def compute_primal(self, x):
 
-        y = slinear_interpolate(p_jax, values_jax, x)
-        return y
+        def interp(xq):
+            return sub_interp(xq, self.p_jax, self.values_jax)
+
+        return vmap(interp, in_axes=0)(x)
 
 
 class FakeOpt(Driver):
@@ -174,8 +192,16 @@ class FakeOpt(Driver):
                                      wrt=list(self._designvars.keys()),
                                      return_format='dict')
 
+    def compile_primal(self):
+        self._run_solve_nonlinear()
 
-def run_driver(comp_class):
+    def compile_derivs(self):
+        self._compute_totals(of=list(self._cons.keys()),
+                             wrt=list(self._designvars.keys()),
+                             return_format='dict')
+
+
+def run_driver(comp_class, pre_compile=False):
 
     prob = om.Problem()
     model = prob.model
@@ -194,6 +220,24 @@ def run_driver(comp_class):
 
     prob.set_val('x', np.repeat(x_np, VEC_SIZE, 0))
 
+    if pre_compile:
+        prob.final_setup()
+
+        t0 = time()
+        prob.driver.compile_primal()
+        t1 = time() - t0
+
+        t0 = time()
+        prob.driver.compile_derivs()
+        t2 = time() - t0
+
+        t0 = time()
+        prob.run_driver()
+        t3 = time() - t0
+
+        return t1, t2, t3
+
+
     t0 = time()
     prob.run_driver()
     t1 = time() - t0
@@ -207,8 +251,11 @@ print(f"OM lagrange3:    {t1}")
 t1 = run_driver(OMInterpFast)
 print(f"OM 3D-lagrange3: {t1}")
 
-t1 = run_driver(JAXInterp)
-print(f"JAX lagrange3:   {t1}")
+t1, t2, t3 = run_driver(JAXInterp, pre_compile=True)
+print(f"JAX compile pri: {t1}")
+print(f"JAX compile der: {t2}")
+print(f"JAX execute:     {t3}")
+print(f"JAX total:       {t1 + t2 + t3}")
 
 
 print('done')
