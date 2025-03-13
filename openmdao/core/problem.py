@@ -6,6 +6,7 @@ import shutil
 import sys
 import pprint
 import os
+from copy import deepcopy
 import weakref
 import pathlib
 import textwrap
@@ -23,7 +24,7 @@ from openmdao.core.constants import _SetupStatus
 from openmdao.core.component import Component
 from openmdao.core.driver import Driver, record_iteration
 from openmdao.core.explicitcomponent import ExplicitComponent
-from openmdao.core.system import System, _print_deriv_table, _iter_derivs
+from openmdao.core.system import System, _iter_derivs
 from openmdao.core.group import Group
 from openmdao.core.total_jac import _TotalJacInfo
 from openmdao.core.constants import _DEFAULT_COLORING_DIR, _DEFAULT_OUT_STREAM, \
@@ -37,6 +38,7 @@ from openmdao.error_checking.check_config import _default_checks, _all_checks, \
 from openmdao.recorders.recording_iteration_stack import _RecIteration
 from openmdao.recorders.recording_manager import RecordingManager, record_viewer_data, \
     record_model_options
+from openmdao.utils.deriv_display import _print_deriv_table, _deriv_display, _deriv_display_compact
 from openmdao.utils.mpi import MPI, FakeComm, multi_proc_exception_check, check_mpi_env
 from openmdao.utils.name_maps import name2abs_names
 from openmdao.utils.options_dictionary import OptionsDictionary
@@ -53,7 +55,7 @@ from openmdao.utils.general_utils import pad_name, _find_dict_meta, env_truthy, 
 from openmdao.utils.om_warnings import issue_warning, DerivativesWarning, warn_deprecation, \
     OMInvalidCheckDerivativesOptionsWarning
 import openmdao.utils.coloring as coloring_mod
-from openmdao.utils.file_utils import _get_outputs_dir, text2html, get_work_dir
+from openmdao.utils.file_utils import _get_outputs_dir, text2html, _get_work_dir
 from openmdao.utils.testing_utils import _fix_comp_check_data
 
 try:
@@ -96,7 +98,11 @@ def _get_top_script():
         The absolute path, or None if it can't be resolved.
     """
     try:
-        return pathlib.Path(__main__.__file__).resolve()
+        script_name = os.environ.get('OPENMDAO_SCRIPT_NAME')
+        if script_name is not None:
+            return pathlib.Path(script_name).resolve()
+        else:
+            return pathlib.Path(__main__.__file__).resolve()
     except Exception:
         # this will error out in some cases, e.g. inside of a jupyter notebook, so just
         # return None in that case.
@@ -263,8 +269,11 @@ class Problem(object, metaclass=ProblemMetaclass):
 
         # General options
         self.options = OptionsDictionary(parent_name=type(self).__name__)
+        default_workdir = options['work_dir'] if 'work_dir' in options else _get_work_dir()
+        self.options.declare('work_dir', default=default_workdir,
+                             desc='Working directory for the problem.')
         self.options.declare('coloring_dir', types=str,
-                             default=os.path.join(get_work_dir(), 'coloring_files'),
+                             default=os.path.join(default_workdir, 'coloring_files'),
                              desc='Directory containing coloring files (if any) for this Problem.')
         self.options.declare('group_by_pre_opt_post', types=bool,
                              default=False,
@@ -529,7 +538,7 @@ class Problem(object, metaclass=ProblemMetaclass):
         object
             The value of the requested output/input variable.
         """
-        if self._metadata['setup_status'] == _SetupStatus.POST_SETUP:
+        if self._metadata['setup_status'] <= _SetupStatus.POST_SETUP2:
             abs_names = name2abs_names(self.model, name)
             if abs_names:
                 val = self.model._get_cached_val(name, abs_names, get_remote=get_remote)
@@ -957,10 +966,11 @@ class Problem(object, metaclass=ProblemMetaclass):
         self._orig_mode = mode
 
         # this metadata will be shared by all Systems/Solvers in the system tree
-        self._metadata = {
+        self._metadata.update({
             'name': self._name,  # the name of this Problem
             'pathname': None,  # the pathname of this Problem in the current tree of Problems
             'comm': comm,
+            'work_dir': pathlib.Path(self.options['work_dir']),
             'coloring_dir': _DEFAULT_COLORING_DIR,  # directory for input coloring files
             'recording_iter': _RecIteration(comm.rank),  # manager of recorder iterations
             'local_vector_class': local_vector_class,
@@ -1013,7 +1023,7 @@ class Problem(object, metaclass=ProblemMetaclass):
             'rel_array_cache': {},  # cache of relevance arrays
             'ncompute_totals': 0,  # number of times compute_totals has been called
             'jax_group': None,  # not None if a Group is currently performing a jax operation
-        }
+        })
 
         model_comm = self.driver._setup_comm(comm)
 
@@ -1036,7 +1046,7 @@ class Problem(object, metaclass=ProblemMetaclass):
         # from a previous run.
         # Start setup by deleting any existing reports so that the files
         # that are in that directory are all from this run and not a previous run
-        reports_dirpath = self.get_reports_dir(force=False)
+        reports_dirpath = self.get_reports_dir()
         if not MPI or (self.comm is not None and self.comm.rank == 0):
             if os.path.isdir(reports_dirpath):
                 try:
@@ -1044,7 +1054,7 @@ class Problem(object, metaclass=ProblemMetaclass):
                 except FileNotFoundError:
                     # Folder already removed by another proccess
                     pass
-        self._metadata['reports_dir'] = self.get_reports_dir(force=False)
+        self._metadata['reports_dir'] = self.get_reports_dir()
 
         try:
             model._setup(model_comm, self._metadata)
@@ -1058,8 +1068,6 @@ class Problem(object, metaclass=ProblemMetaclass):
         self._logger = logger
 
         self._metadata['setup_status'] = _SetupStatus.POST_SETUP
-
-        self._check_collected_errors()
 
         return self
 
@@ -1076,50 +1084,63 @@ class Problem(object, metaclass=ProblemMetaclass):
         driver = self.driver
         model = self.model
 
-        responses = model.get_responses(recurse=True, use_prom_ivc=True)
-        designvars = model.get_design_vars(recurse=True, use_prom_ivc=True)
-
         if self._metadata['setup_status'] < _SetupStatus.POST_FINAL_SETUP:
-            model._final_setup()
+            first = True
+            self._metadata['static_mode'] = False
+            try:
+                model._setup_part2()
+                self._check_collected_errors()
 
-        model._check_required_connections()
+                responses = model.get_responses(recurse=True, use_prom_ivc=True)
+                designvars = model.get_design_vars(recurse=True, use_prom_ivc=True)
+                response_size, desvar_size = driver._update_voi_meta(model, responses,
+                                                                     designvars)
 
-        response_size, desvar_size = driver._update_voi_meta(model, responses, designvars)
+                model._final_setup()
+            finally:
+                self._metadata['static_mode'] = True
 
-        # update mode if it's been set to 'auto'
-        if self._orig_mode == 'auto':
-            mode = 'rev' if response_size < desvar_size else 'fwd'
+            # update mode if it's been set to 'auto'
+            if self._orig_mode == 'auto':
+                mode = 'rev' if response_size < desvar_size else 'fwd'
+            else:
+                mode = self._orig_mode
+
+            self._metadata['mode'] = mode
         else:
-            mode = self._orig_mode
+            first = False
+            mode = self._metadata['mode']
 
-        self._metadata['mode'] = mode
+            responses = model.get_responses(recurse=True, use_prom_ivc=True)
+            designvars = model.get_design_vars(recurse=True, use_prom_ivc=True)
+            response_size, desvar_size = driver._update_voi_meta(model, responses, designvars)
 
-        # If set_solver_print is called after an initial run, in a multi-run scenario,
-        #  this part of _final_setup still needs to happen so that change takes effect
-        #  in subsequent runs
-        if self._metadata['setup_status'] >= _SetupStatus.POST_FINAL_SETUP:
+            # If set_solver_print is called after an initial run, in a multi-run scenario,
+            #  this part of _final_setup still needs to happen so that change takes effect
+            #  in subsequent runs
             model._setup_solver_print()
 
         driver._setup_driver(self)
 
-        if coloring_mod._use_total_sparsity:
-            coloring = driver._coloring_info.coloring
-            if coloring is not None:
-                # if we're using simultaneous total derivatives then our effective size is less
-                # than the full size
-                if coloring._fwd and coloring._rev:
-                    pass  # we're doing both!
-                elif mode == 'fwd' and coloring._fwd:
-                    desvar_size = coloring.total_solves()
-                elif mode == 'rev' and coloring._rev:
-                    response_size = coloring.total_solves()
+        if first:
+            if coloring_mod._use_total_sparsity:
+                coloring = driver._coloring_info.coloring
+                if coloring is not None:
+                    # if we're using simultaneous total derivatives then our effective size is less
+                    # than the full size
+                    if coloring._fwd and coloring._rev:
+                        pass  # we're doing both!
+                    elif mode == 'fwd' and coloring._fwd:
+                        desvar_size = coloring.total_solves()
+                    elif mode == 'rev' and coloring._rev:
+                        response_size = coloring.total_solves()
 
-        if ((mode == 'fwd' and desvar_size > response_size) or
-                (mode == 'rev' and response_size > desvar_size)):
-            issue_warning(f"Inefficient choice of derivative mode.  You chose '{mode}' for a "
-                          f"problem with {desvar_size} design variables and {response_size} "
-                          "response variables (objectives and nonlinear constraints).",
-                          category=DerivativesWarning)
+            if ((mode == 'fwd' and desvar_size > response_size) or
+                    (mode == 'rev' and response_size > desvar_size)):
+                issue_warning(f"Inefficient choice of derivative mode.  You chose '{mode}' for a "
+                              f"problem with {desvar_size} design variables and {response_size} "
+                              "response variables (objectives and nonlinear constraints).",
+                              category=DerivativesWarning)
 
         if (not self._metadata['allow_post_setup_reorder'] and
                 self._metadata['setup_status'] == _SetupStatus.PRE_SETUP and self.model._order_set):
@@ -1148,8 +1169,41 @@ class Problem(object, metaclass=ProblemMetaclass):
                 logger = TestLogger()
             self.check_config(logger, checks=checks)
 
+    def set_setup_status(self, status, **setup_kwargs):
+        """
+        Set the setup status of the problem, running any setup steps that haven't been run yet.
+
+        If the status is already at or beyond the requested status, this method does nothing,
+        i.e., it won't reset the status to an earlier step.
+
+        Parameters
+        ----------
+        status : _SetupStatus
+            The status to set the problem to.
+        **setup_kwargs : dict
+            Keyword arguments to pass to the setup method if it hasn't already been called.
+        """
+        current_status = self._metadata['setup_status']
+        if current_status >= status:
+            return
+
+        if status >= _SetupStatus.POST_SETUP:
+            if current_status < _SetupStatus.POST_SETUP:
+                self.setup(**setup_kwargs)
+                current_status = _SetupStatus.POST_SETUP
+
+        if status >= _SetupStatus.POST_SETUP2:
+            if current_status < _SetupStatus.POST_SETUP2:
+                self.model._setup_part2()
+                current_status = _SetupStatus.POST_SETUP2
+
+        if status >= _SetupStatus.POST_FINAL_SETUP:
+            if current_status < _SetupStatus.POST_FINAL_SETUP:
+                self.final_setup()
+                current_status = _SetupStatus.POST_FINAL_SETUP
+
     def check_partials(self, out_stream=_DEFAULT_OUT_STREAM, includes=None, excludes=None,
-                       compact_print=False, abs_err_tol=1e-6, rel_err_tol=1e-6,
+                       compact_print=False, abs_err_tol=0.0, rel_err_tol=1e-6,
                        method='fd', step=None, form='forward', step_calc='abs',
                        minimum_step=1e-12, force_dense=True, show_only_incorrect=False):
         """
@@ -1203,10 +1257,10 @@ class Problem(object, metaclass=ProblemMetaclass):
             First key is the component name.
             Second key is the (output, input) tuple of strings.
             The third key is one of:
-            'rel error', 'abs error', 'magnitude', 'J_fd', 'J_fwd', 'J_rev', 'vals_at_max_abs',
-            'vals_at_max_rel', and 'rank_inconsistent'.
-            For 'rel error', 'abs error', 'vals_at_max_abs' and 'vals_at_max_rel' the value is a
-            tuple containing values for forward - fd, adjoint - fd, forward - adjoint. For
+            'tol violation', 'magnitude', 'J_fd', 'J_fwd', 'J_rev', 'vals_at_max_error',
+            and 'rank_inconsistent'.
+            For 'tol violation' and 'vals_at_max_error' the value is a tuple containing values for
+            forward - fd, adjoint - fd, forward - adjoint. For
             'magnitude' the value is a tuple indicating the maximum magnitude of values found in
             Jfwd, Jrev, and Jfd.
             The boolean 'rank_inconsistent' indicates if the derivative wrt a serial variable is
@@ -1281,11 +1335,11 @@ class Problem(object, metaclass=ProblemMetaclass):
                     worst = wrst + (type(comp).__name__, comp.pathname)
 
         if worst is not None:
-            _, table_data, headers, ctype, cpath = worst
+            _, table_data, headers, col_meta, ctype, cpath = worst
             print(file=out_stream)
-            print(add_border(f"Sub Jacobian with Largest Relative Error: {ctype} '{cpath}'", '#'),
-                  file=out_stream)
-            _print_deriv_table([table_data[:-1]], headers[:-1], out_stream)
+            print(add_border(f"Sub Jacobian with Largest Tolerance Violation: {ctype} '{cpath}'",
+                             '#'), file=out_stream)
+            _print_deriv_table([table_data], headers, out_stream, col_meta=col_meta)
 
         if step is None or isinstance(step, (float, int)):
             _fix_check_data(partials_data)
@@ -1293,7 +1347,7 @@ class Problem(object, metaclass=ProblemMetaclass):
         return partials_data
 
     def check_totals(self, of=None, wrt=None, out_stream=_DEFAULT_OUT_STREAM, compact_print=False,
-                     driver_scaling=False, abs_err_tol=1e-6, rel_err_tol=1e-6, method='fd',
+                     driver_scaling=False, abs_err_tol=0.0, rel_err_tol=1e-6, method='fd',
                      step=None, form=None, step_calc='abs', show_progress=False,
                      show_only_incorrect=False, directional=False, sort=True):
         """
@@ -1354,13 +1408,12 @@ class Problem(object, metaclass=ProblemMetaclass):
             First key:
                 is the (output, input) tuple of strings;
             Second key:
-                'rel error', 'abs error', 'magnitude', 'J_fd', 'J_fwd', 'J_rev', 'vals_at_max_abs',
-                'vals_at_max_rel', and 'rank_inconsistent'.
+                'tol violation', 'magnitude', 'J_fd', 'J_fwd', 'J_rev', 'vals_at_max_error',
+                and 'rank_inconsistent'.
 
-            For 'rel error', 'abs error', 'vals_at_max_abs' and 'vals_at_max_rel' the value is a
-            tuple containing values for forward - fd, reverse - fd, forward - reverse. For
-            'magnitude' the value is a tuple indicating the maximum magnitude of values found in
-            Jfwd, Jrev, and Jfd.
+            For 'tol violation' and 'vals_at_max_error' the value is a tuple containing values for
+            forward - fd, reverse - fd, forward - reverse. For 'magnitude' the value is a tuple
+            indicating the maximum magnitude of values found in Jfwd, Jrev, and Jfd.
         """
         if out_stream == _DEFAULT_OUT_STREAM:
             out_stream = sys.stdout
@@ -1579,12 +1632,12 @@ class Problem(object, metaclass=ProblemMetaclass):
 
         if out_stream is not None:
             if compact_print:
-                model._deriv_display_compact(err_iter, data[''], out_stream,
-                                             totals=True, show_only_incorrect=show_only_incorrect)
+                _deriv_display_compact(model, err_iter, data[''], out_stream,
+                                       totals=True, show_only_incorrect=show_only_incorrect)
             else:
-                model._deriv_display(err_iter, data[''], rel_err_tol, abs_err_tol, out_stream,
-                                     fd_args, totals=True, lcons=lcons,
-                                     show_only_incorrect=show_only_incorrect)
+                _deriv_display(model, err_iter, data[''], rel_err_tol, abs_err_tol,
+                               out_stream, fd_args, totals=True, lcons=lcons,
+                               show_only_incorrect=show_only_incorrect)
 
         if not do_steps:
             _fix_check_data(data)
@@ -1790,7 +1843,7 @@ class Problem(object, metaclass=ProblemMetaclass):
         desvars = self.driver._designvars
         vals = self.driver.get_design_var_values(get_remote=True, driver_scaling=driver_scaling)
         if not driver_scaling:
-            desvars = desvars.copy()
+            desvars = deepcopy(desvars)
             for meta in desvars.values():
                 scaler = meta['scaler'] if meta.get('scaler') is not None else 1.
                 adder = meta['adder'] if meta.get('adder') is not None else 0.
@@ -1818,7 +1871,7 @@ class Problem(object, metaclass=ProblemMetaclass):
         cons = self.driver._cons
         vals = self.driver.get_constraint_values(driver_scaling=driver_scaling)
         if not driver_scaling:
-            cons = cons.copy()
+            cons = deepcopy(cons)
             for meta in cons.values():
                 scaler = meta['scaler'] if meta.get('scaler') is not None else 1.
                 adder = meta['adder'] if meta.get('adder') is not None else 0.
@@ -2158,7 +2211,10 @@ class Problem(object, metaclass=ProblemMetaclass):
             checks = sorted(_all_non_redundant_checks)
 
         if logger is None and checks:
-            check_file_path = None if out_file is None else str(self.get_outputs_dir() / out_file)
+            if out_file is None:
+                check_file_path = None
+            else:
+                check_file_path = str(self.get_outputs_dir(mkdir=True) / out_file)
             logger = get_logger('check_config', out_file=check_file_path, use_format=True)
 
         for c in checks:
@@ -2223,7 +2279,7 @@ class Problem(object, metaclass=ProblemMetaclass):
         """
         return self.get_outputs_dir('reports', mkdir=force or len(self._reports) > 0)
 
-    def get_outputs_dir(self, *subdirs, mkdir=True):
+    def get_outputs_dir(self, *subdirs, mkdir=False):
         """
         Get the path under which all output files of this problem are to be placed.
 
@@ -2518,7 +2574,7 @@ class Problem(object, metaclass=ProblemMetaclass):
                     coloring = \
                         coloring_mod.dynamic_total_coloring(
                             self.driver, run_model=do_run,
-                            fname=self.driver._get_total_coloring_fname(mode='output'),
+                            fname=self.model.get_coloring_fname(mode='output'),
                             of=of, wrt=wrt)
             else:
                 return coloring_info.coloring

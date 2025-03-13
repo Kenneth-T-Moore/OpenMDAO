@@ -282,11 +282,18 @@ def sparsity_diff_viz(arr1, arr2, val_map=None, stream=sys.stdout):
         Mapping of array values to characters.
     stream : file-like
         Stream where output will be written.
+
+    Returns
+    -------
+    bool
+        True if they agree, False otherwise.
     """
     if val_map is None:
         val_map = {0: '.', 1: '1', 3: '2', 4: 'x'}
     spdiff = get_sparsity_diff_array(arr1, arr2)
     csr_array_viz(spdiff, val_map=val_map, stream=stream)
+
+    return 1 not in spdiff.data and 3 not in spdiff.data
 
 
 def array_viz(arr, prob=None, of=None, wrt=None, stream=sys.stdout):
@@ -622,7 +629,7 @@ def dv_abs_complex(x, x_deriv):
     return x, x_deriv
 
 
-def rand_sparsity(shape, density_ratio, dtype=bool):
+def rand_sparsity(shape, density_ratio, dtype=bool, rng=None):
     """
     Return a random COO matrix of the given shape with given percent density.
 
@@ -637,6 +644,8 @@ def rand_sparsity(shape, density_ratio, dtype=bool):
         Approximate ratio of nonzero to zero entries in the desired matrix.
     dtype : type
         Specifies type of the values in the returned matrix.
+    rng : np.random.Generator or None
+        Random number generator.
 
     Returns
     -------
@@ -645,13 +654,16 @@ def rand_sparsity(shape, density_ratio, dtype=bool):
     """
     assert len(shape) == 2, f"shape must be a size 2 tuple but {shape} was given"
 
+    if rng is None:
+        rng = np.random.default_rng()
+
     nrows, ncols = shape
 
     nnz = int(nrows * ncols * density_ratio)
 
     data = np.ones(nnz, dtype=dtype)
-    rows = np.random.randint(0, nrows, nnz)
-    cols = np.random.randint(0, ncols, nnz)
+    rows = rng.integers(0, nrows, nnz)
+    cols = rng.integers(0, ncols, nnz)
 
     coo = coo_matrix((data, (rows, cols)), shape=shape)
 
@@ -1106,54 +1118,47 @@ def safe_norm(arr):
     return 0. if arr is None or arr.size == 0 else np.linalg.norm(arr)
 
 
-def get_errors(x, y):
+def get_tol_violation(x, ref, atol=0.0, rtol=1e-5):
     """
-    Compute the max absolute and relative errors of the difference in x and y.
+    Compute the max tolerance violation of the difference between x and ref.
+
+    tolerance violation is defined as:
+
+        abs(x - ref) - (atol + rtol * abs(ref))
+
+    If the result is positive, then the tolerance is violated.
 
     Parameters
     ----------
     x : ndarray
-        The first array.
-    y : ndarray
-        The second array.
+        The test array.
+    ref : ndarray
+        The reference array.
+    atol : float
+        The absolute tolerance.
+    rtol : float
+        The relative tolerance.
 
     Returns
     -------
     tuple
-        Tuple of (max_abs_error, (abs_max_x, abs_max_y), max_rel_error, (rel_max_x, rel_max_y),
-        denom_idx), where ???_max_x and ???_max_y are the values of x and y at the locations where
-        absolute and relative errors are max, respectively, and denom_idx is the index specifying
-        which argument, 0 (x) or 1 (y), was used as the denominator in the relative error.
+        Max_error, (max_x_location, max_ref_location), above_tolerance.
     """
-    args = (x, y)
-    abs_error = np.abs(x - y)
+    abs_error = np.abs(x - ref)
     if abs_error.size == 0:
-        return 0.0, (0.0, 0.0), 0.0, (0.0, 0.0), 0
+        return 0.0, (0, 0), False, 0.0, 0.0
 
-    max_abs_error_idx = np.argmax(abs_error)
-    max_abs_error = abs_error.flat[max_abs_error_idx]
-    abs_max_x = x.flat[max_abs_error_idx]
-    abs_max_y = y.flat[max_abs_error_idx]
+    mixed_atol_rtol = atol + rtol * np.abs(ref)
+    diff = abs_error - mixed_atol_rtol  # any values > 0 violate tolerance check
 
-    # Filter values where the divisor would be zero
-    denom_idx = 1
-    nonzero = y != 0.
-    if not nonzero.any():
-        nonzero = x != 0.
-        if not nonzero.any():
-            return max_abs_error, (abs_max_x, abs_max_y), float('nan'), (0.0, 0.0), denom_idx
-        else:
-            denom_idx = 0
+    max_error_idx = np.argmax(diff)
+    max_error = diff.flat[max_error_idx]
+    max_error_x = x.flat[max_error_idx]
+    max_error_ref = ref.flat[max_error_idx]
+    abs_at_max = abs_error.flat[max_error_idx]
+    if max_error_ref:
+        rel_at_max = abs_at_max / np.abs(max_error_ref)
+    else:
+        rel_at_max = np.inf
 
-    max_rel_error_nz = abs_error[nonzero] / np.abs(args[denom_idx][nonzero])
-    max_rel_error_idx = np.argmax(max_rel_error_nz)
-    max_rel_error = max_rel_error_nz.flat[max_rel_error_idx]
-    rel_max_x = x[nonzero].flat[max_rel_error_idx]
-    rel_max_y = y[nonzero].flat[max_rel_error_idx]
-
-    # if one value is zero the relative error doesn't really make sense, so just defer to whatever
-    # the absolute error check says.
-    if rel_max_x == 0.0 or rel_max_y == 0.0:
-        max_rel_error = float('nan')
-
-    return max_abs_error, (abs_max_x, abs_max_y), max_rel_error, (rel_max_x, rel_max_y), denom_idx
+    return max_error, (max_error_x, max_error_ref), np.any(diff > 0.), abs_at_max, rel_at_max

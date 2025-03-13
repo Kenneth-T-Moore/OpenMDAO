@@ -1,7 +1,6 @@
 """Define the Component class."""
 
 import sys
-import types
 import inspect
 from collections import defaultdict
 from collections.abc import Iterable
@@ -16,12 +15,13 @@ from scipy.sparse import issparse, coo_matrix, csr_matrix
 from openmdao.core.system import System, _supported_methods, _DEFAULT_COLORING_META, \
     global_meta_names, collect_errors, _iter_derivs
 from openmdao.core.constants import INT_DTYPE, _DEFAULT_OUT_STREAM, _SetupStatus
-from openmdao.jacobians.dictionary_jacobian import DictionaryJacobian, _CheckingJacobian
+from openmdao.jacobians.dictionary_jacobian import _CheckingJacobian
 from openmdao.utils.units import simplify_unit
 from openmdao.utils.name_maps import abs_key_iter, abs_key2rel_key, rel_name2abs_name, \
     rel_key2abs_key
-from openmdao.utils.mpi import MPI, multi_proc_exception_check
+from openmdao.utils.mpi import MPI
 from openmdao.utils.array_utils import shape_to_len, submat_sparsity_iter, sparsity_diff_viz
+from openmdao.utils.deriv_display import _deriv_display, _deriv_display_compact
 from openmdao.utils.general_utils import format_as_float_or_array, ensure_compatible, \
     find_matches, make_set, inconsistent_across_procs, LocalRangeIterable
 from openmdao.utils.indexer import Indexer, indexer
@@ -101,6 +101,8 @@ class Component(System):
         then shape is a tuple of shapes, otherwise it is a single shape.
     _valid_name_map : dict
         Mapping of declared input/output names to valid Python names.
+    _orig_compute_primal : function
+        The original compute_primal method.
     """
 
     def __init__(self, **kwargs):
@@ -121,6 +123,7 @@ class Component(System):
         self._has_distrib_outputs = False
         self._compute_primals_out_shape = None
         self._valid_name_map = {}
+        self._orig_compute_primal = getattr(self, 'compute_primal')
 
     def _tree_flatten(self):
         """
@@ -154,8 +157,9 @@ class Component(System):
                                   'across multiple processes')
         self.options.declare('run_root_only', types=bool, default=False,
                              desc='If True, call compute, compute_partials, linearize, '
-                                  'apply_linear, apply_nonlinear, and compute_jacvec_product '
-                                  'only on rank 0 and broadcast the results to the other ranks.')
+                                  'apply_linear, apply_nonlinear, solve_linear, solve_nonlinear, '
+                                  'and compute_jacvec_product only on rank 0 and broadcast the '
+                                  'results to the other ranks.')
         self.options.declare('always_opt', types=bool, default=False,
                              desc='If True, force nonlinear operations on this component to be '
                                   'included in the optimization loop even if this component is not '
@@ -394,7 +398,7 @@ class Component(System):
         """
         self._subjacs_info = {}
         if not self.matrix_free:
-            self._jacobian = DictionaryJacobian(system=self)
+            self._init_jacobian()
 
         self.setup_partials()  # hook for component writers to specify sparsity patterns
 
@@ -412,6 +416,8 @@ class Component(System):
                 # declare all partials as 'cs' or 'fd'
                 for of, wrt in get_function_deps(self.compute_primal,
                                                  self._var_rel_names['output']):
+                    if of in self._discrete_outputs or wrt in self._discrete_inputs:
+                        continue
                     self.declare_partials(of, wrt, method=method)
             else:
                 # declare only those partials that have been declared
@@ -525,29 +531,6 @@ class Component(System):
     def _promoted_wrt_iter(self):
         yield from self._get_partials_wrts()
 
-    def _update_subjac_sparsity(self, sparsity_iter):
-        """
-        Update subjac sparsity info based on the given coloring.
-
-        The sparsity of the partial derivatives in this component will be used when computing
-        the sparsity of the total jacobian for the entire model.  Without this, all of this
-        component's partials would be treated as dense, resulting in an overly conservative
-        coloring of the total jacobian.
-
-        Parameters
-        ----------
-        sparsity_iter : iter of tuple
-            Tuple of the form (of, wrt, rows, cols, shape).
-        """
-        # sparsity uses relative names, so we need to convert to absolute
-        prefix = self.pathname + '.'
-        for of, wrt, rows, cols, shape in sparsity_iter:
-            if rows is None:
-                continue
-            abs_key = (prefix + of, prefix + wrt)
-            if abs_key in self._subjacs_info:
-                self._subjacs_info[abs_key]['sparsity'] = (rows, cols, shape)
-
     def add_input(self, name, val=1.0, shape=None, units=None, desc='', tags=None,
                   shape_by_conn=False, copy_shape=None, compute_shape=None,
                   require_connection=False, distributed=None, primal_name=None):
@@ -621,8 +604,8 @@ class Component(System):
             raise TypeError(f"{self.msginfo}: The copy_shape argument should be a str or None but "
                             f"a '{type(copy_shape).__name__}' was given.")
 
-        if compute_shape and not isinstance(compute_shape, types.FunctionType):
-            raise TypeError(f"{self.msginfo}: The compute_shape argument should be a function but "
+        if compute_shape and not callable(compute_shape):
+            raise TypeError(f"{self.msginfo}: The compute_shape argument should be callable but "
                             f"a '{type(compute_shape).__name__}' was given.")
 
         if shape_by_conn or copy_shape or compute_shape:
@@ -909,8 +892,8 @@ class Component(System):
             raise TypeError(f"{self.msginfo}: The copy_shape argument should be a str or None but "
                             f"a '{type(copy_shape).__name__}' was given.")
 
-        if compute_shape and not isinstance(compute_shape, (types.FunctionType, types.MethodType)):
-            raise TypeError(f"{self.msginfo}: The compute_shape argument should be a function but "
+        if compute_shape and not callable(compute_shape):
+            raise TypeError(f"{self.msginfo}: The compute_shape argument should be callable but "
                             f"a '{type(compute_shape).__name__}' was given.")
 
         if compute_shape is not None and is_lambda(compute_shape):
@@ -1820,9 +1803,7 @@ class Component(System):
         if self._first_call_to_linearize:
             self._first_call_to_linearize = False  # only do this once
             if coloring_mod._use_partial_sparsity:
-                coloring = self._get_coloring()
-                if coloring is not None:
-                    self._update_subjac_sparsity(coloring._subjac_sparsity_iter())
+                self._get_coloring()
                 if self._jacobian is not None:
                     self._jacobian._restore_approx_sparsity()
 
@@ -1977,6 +1958,8 @@ class Component(System):
             The type of finite difference to perform. Valid options are 'fd' for forward difference,
             or 'cs' for complex step.
         """
+        if method == 'jax':
+            method = 'fd'
         fd_methods = {'fd': _supported_methods['fd'], 'cs': _supported_methods['cs']}
         try:
             approximation = fd_methods[method]()
@@ -2003,30 +1986,6 @@ class Component(System):
         # Perform the FD here.
         with self._unscaled_context(outputs=[self._outputs], residuals=[self._residuals]):
             approximation.compute_approximations(self, jac=jac)
-
-    def compute_fd_sparsity(self, method='fd', num_full_jacs=2, perturb_size=1e-9):
-        """
-        Use finite difference to compute a sparsity matrix.
-
-        Parameters
-        ----------
-        method : str
-            The type of finite difference to perform. Valid options are 'fd' for forward difference,
-            or 'cs' for complex step.
-        num_full_jacs : int
-            Number of times to repeat jacobian computation using random perturbations.
-        perturb_size : float
-            Size of the random perturbation.
-
-        Returns
-        -------
-        coo_matrix
-            The sparsity matrix.
-        """
-        jac = coloring_mod._ColSparsityJac(self)
-        for _ in self._perturbation_iter(num_full_jacs, perturb_size):
-            self.compute_fd_jac(jac=jac, method=method)
-        return jac.get_sparsity()
 
     def check_sparsity(self, method='fd', max_nz=90., out_stream=_DEFAULT_OUT_STREAM):
         """
@@ -2174,7 +2133,7 @@ class Component(System):
                                       category=OMInvalidCheckDerivativesOptionsWarning)
 
     def check_partials(self, out_stream=_DEFAULT_OUT_STREAM,
-                       compact_print=False, abs_err_tol=1e-6, rel_err_tol=1e-6,
+                       compact_print=False, abs_err_tol=0.0, rel_err_tol=1e-6,
                        method='fd', step=None, form='forward', step_calc='abs',
                        minimum_step=1e-12, force_dense=True, show_only_incorrect=False,
                        show_worst=True):
@@ -2225,11 +2184,11 @@ class Component(System):
             Where derivs_dict is a dict, where the top key is the component pathname.
             Under the top key, the subkeys are the (of, wrt) keys of the subjacs.
             Within the (of, wrt) entries are the following keys:
-            'rel error', 'abs error', 'magnitude', 'J_fd', 'J_fwd', 'J_rev', 'vals_at_max_abs',
-            'vals_at_max_rel', and 'rank_inconsistent'.
+            'tol violation', 'magnitude', 'J_fd', 'J_fwd', 'J_rev', 'vals_at_max_error',
+            and 'rank_inconsistent'.
             For 'J_fd', 'J_fwd', 'J_rev' the value is a numpy array representing the computed
             Jacobian for the three different methods of computation.
-            For 'rel error', 'abs error', 'vals_at_max_abs' and 'vals_at_max_rel' the value is a
+            For 'tol violation' and 'vals_at_max_error' the value is a
             tuple containing values for forward - fd, reverse - fd, forward - reverse. For
             'magnitude' the value is a tuple indicating the maximum magnitude of values found in
             Jfwd, Jrev, and Jfd.
@@ -2237,8 +2196,8 @@ class Component(System):
             inconsistent across MPI ranks.
 
             worst is either None or a tuple of the form (error, table_row, header)
-            where error is the max relative error found, table_row is the formatted table row
-            containing the max relative error, and header is the formatted table header.  'worst'
+            where error is the max error found, table_row is the formatted table row
+            containing the max error, and header is the formatted table header.  'worst'
             is not None only if compact_print is True.
         """
         if out_stream == _DEFAULT_OUT_STREAM:
@@ -2263,6 +2222,8 @@ class Component(System):
         if self.matrix_free:
             directions = ('fwd', 'rev')
         else:
+            # TODO: replace 'fwd' with self.best_partial_deriv_direction(). Currently fails
+            # when it equals 'rev' for directional derivatives.
             directions = ('fwd',)  # rev same as fwd for analytic jacobians
             self.run_linearize(sub_do_ln=False)
 
@@ -2388,7 +2349,7 @@ class Component(System):
                                     if idx is not None:
                                         deriv[jac_key][idx, :] = derivs
 
-                # These components already have a Jacobian with calculated derivatives.
+                # This component already has a Jacobian with calculated derivatives.
                 else:
 
                     subjacs = self._jacobian._subjacs_info
@@ -2531,13 +2492,10 @@ class Component(System):
                 # Perform the FD here.
                 approximation.compute_approximations(self, jac=approx_jac)
 
-            with multi_proc_exception_check(self.comm):
-                if approx_jac._errors:
-                    raise RuntimeError('\n'.join(approx_jac._errors))
-
             for abs_key, partial in approx_jac.items():
                 rel_key = abs_key2rel_key(self, abs_key)
                 deriv = partials_data[rel_key]
+                subjacs_info = approx_jac._subjacs_info[abs_key]
                 _of, _wrt = rel_key
 
                 if 'J_fd' not in deriv:
@@ -2545,6 +2503,10 @@ class Component(System):
                     deriv['steps'] = []
                 deriv['J_fd'].append(partial)
                 deriv['steps'] = actual_steps[rel_key]
+
+                if 'uncovered_nz' in subjacs_info:
+                    deriv['uncovered_nz'] = subjacs_info['uncovered_nz']
+                    deriv['uncovered_threshold'] = subjacs_info['uncovered_threshold']
 
                 if _wrt in local_opts and local_opts[_wrt]['directional']:
                     if self.matrix_free:
@@ -2577,17 +2539,16 @@ class Component(System):
         err_iter = list(_iter_derivs(partials_data, show_only_incorrect, all_fd_options, False,
                                      nondeps, self.matrix_free, abs_err_tol, rel_err_tol,
                                      incon_keys))
-
         worst = None
         if out_stream is not None:
             if compact_print:
-                worst = self._deriv_display_compact(err_iter, partials_data, out_stream,
-                                                    totals=False,
-                                                    show_only_incorrect=show_only_incorrect,
-                                                    show_worst=show_worst)
+                worst = _deriv_display_compact(self, err_iter, partials_data, out_stream,
+                                               totals=False,
+                                               show_only_incorrect=show_only_incorrect,
+                                               show_worst=show_worst)
             else:
-                self._deriv_display(err_iter, partials_data, rel_err_tol, abs_err_tol, out_stream,
-                                    all_fd_options, False, show_only_incorrect)
+                _deriv_display(self, err_iter, partials_data, rel_err_tol, abs_err_tol, out_stream,
+                               all_fd_options, False, show_only_incorrect)
 
         # check for zero subjacs that are declared as dependent
         zero_keys = set()
@@ -2614,7 +2575,7 @@ class Component(System):
         """
         Check that the compute_primal method args are in the correct order.
         """
-        args = list(inspect.signature(self.compute_primal).parameters)
+        args = list(inspect.signature(self._orig_compute_primal).parameters)
         if args and args[0] == 'self':
             args = args[1:]
         compargs = self._get_compute_primal_argnames()
@@ -2651,6 +2612,27 @@ class Component(System):
                                    "to the 'primal_name' arg when calling "
                                    "add_output/add_discrete_output. This is only necessary if "
                                    "the declared component output name is not a valid Python name.")
+
+    def get_declare_partials_calls(self, sparsity=None):
+        """
+        Return a string containing declare_partials() calls based on the subjac sparsity.
+
+        Parameters
+        ----------
+        sparsity : coo_matrix or None
+            Sparsity matrix to use. If None, compute_sparsity will be called to compute it.
+
+        Returns
+        -------
+        str
+            A string containing a declare_partials() call for each nonzero subjac. This
+            string may be cut and pasted into a component's setup() method.
+        """
+        lines = []
+        for of, wrt, nzrows, nzcols, _ in self.subjac_sparsity_iter(sparsity=sparsity):
+            lines.append(f"    self.declare_partials(of='{of}', wrt='{wrt}', "
+                         f"rows={list(nzrows)}, cols={list(nzcols)})")
+        return '\n'.join(lines)
 
 
 class _DictValues(object):
