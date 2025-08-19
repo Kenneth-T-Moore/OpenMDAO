@@ -169,8 +169,8 @@ class Component(System):
                              desc='If True, attempt to use jit on compute_primal, assuming jax or '
                              'some other AD package capable of jitting is active.')
         self.options.declare('jax_check_primal', types=bool, default=True,
-                             desc='When True, check the primal args and returns to assure that they'
-                             'match the declared variable names and ordering.')
+                             desc='When True, check the primal args and returns to assure that '
+                             'they match the declared variable names and ordering.')
         self.options.declare('default_shape', types=tuple, default=(1,),
                              desc='Default shape for variables that do not set val to a non-scalar '
                              'value or set shape, shape_by_conn, copy_shape, or compute_shape.'
