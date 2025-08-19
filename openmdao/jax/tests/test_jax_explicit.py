@@ -449,6 +449,73 @@ class TestJaxComp(unittest.TestCase):
                           ('G.comp.z', 'G.comp.y'), ('G.comp.zz', 'G.comp.zz'),
                           ('G.comp.z', 'G.comp.z')})
 
+    def test_jax_disable_primal_checking(self):
+
+        class Aircraft:
+            """Our data hierarchy."""
+
+            class Wing:
+                AREA = "aircraft:wing:area"
+                CHORD = "aircraft:wing:chord"
+                SPAN = "aircraft:wing:span"
+                TWIST = "aircraft:wing:twist"
+
+
+        class JaxComp(om.JaxExplicitComponent):
+
+            def setup(self):
+
+                # Turn off OpenMDAO's check of the primal args and returns.
+                self.options['jax_check_primal'] = False
+
+                self.add_input(Aircraft.Wing.CHORD, val=1.0,
+                               primal_name=Aircraft.Wing.CHORD.replace('.', '__'))
+                self.add_input(Aircraft.Wing.SPAN, val=1.0,
+                               primal_name=Aircraft.Wing.SPAN.replace('.', '__'))
+
+                self.add_output(Aircraft.Wing.AREA, val=1.0,
+                               primal_name=Aircraft.Wing.AREA.replace('.', '__'))
+                self.add_output(Aircraft.Wing.TWIST, val=1.0,
+                               primal_name=Aircraft.Wing.TWIST.replace('.', '__'))
+
+            def setup_partials(self):
+                self.declare_partials('*', '*')
+
+            def compute_primal(self, chord, span):
+
+                area = chord * span
+                twist = chord / (chord ** 2 + span ** 2)
+
+                return area, twist
+
+
+        prob = om.Problem()
+        model = prob.model
+
+        model.add_subsystem('jaxcomp', JaxComp(), promotes=['*'])
+
+        prob.model.add_design_var(Aircraft.Wing.CHORD)
+        prob.model.add_design_var(Aircraft.Wing.SPAN)
+
+        prob.model.add_constraint(Aircraft.Wing.AREA, lower=0.0)
+        prob.model.add_constraint(Aircraft.Wing.TWIST, lower=0.0)
+
+        prob.setup()
+
+        prob.set_val(Aircraft.Wing.CHORD, 3.0)
+        prob.set_val(Aircraft.Wing.SPAN, 4.0)
+        prob.run_model()
+
+        area = prob.get_val(Aircraft.Wing.AREA)
+        assert_near_equal(area, 12.0)
+
+        twist = prob.get_val(Aircraft.Wing.TWIST)
+        assert_near_equal(twist, 0.12)
+
+        J = prob.compute_totals()
+        assert_near_equal(J['aircraft:wing:area', 'aircraft:wing:chord'], 4.0)
+        assert_near_equal(J['aircraft:wing:area', 'aircraft:wing:span'], 3.0)
+
 
 if sys.version_info >= (3, 9):
 
